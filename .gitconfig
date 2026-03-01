@@ -1,0 +1,22 @@
+[user]
+	email = stancu.t.mihai@gmail.com
+	name = Mihai Stancu
+	signingkey = 7C46A6811C8108B07FC06FB0C9D5A3AC88F635E2
+[pull]
+	rebase = false
+[init]
+	defaultBranch = main
+[alias]
+    stash-unstaged = "!cd "${GIT_PREFIX:-.}"; f() { \
+        git stash --quiet --staged;                 \
+        git stash -u \"$@\";                        \
+        git stash pop --quiet \"stash@{1}\";        \
+        git add -A;                                 \
+    }; f"
+	slog = log --decorate --pretty=format:'%C(yellow)%h%Creset %Cgreen%ad%Creset %Cblue[%an]%Creset %s' --date=short
+[core]
+	pager = diff-so-fancy | less --tabs=4 -RFX
+[interactive]
+	diffFilter = diff-so-fancy --patch
+[commit]
+	gpgsign = true

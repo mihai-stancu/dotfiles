@@ -1,0 +1,4 @@
+. /usr/share/bash-completion/bash_completion
+source /usr/share/doc/fzf/examples/key-bindings.bash
+source <(kubectl completion bash)
+complete -W "$(tldr 2>/dev/null --list)" tldr
