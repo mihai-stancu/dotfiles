@@ -1,0 +1,634 @@
+#!/usr/local/bin/steward
+
+new-stuff-for-review() {
+	apt printer-driver-fujixerox
+	apt shellcheck
+	apt fuse3
+	apt tmux
+	bin tldr https://raw.githubusercontent.com/raylee/tldr/master/tldr
+}
+
+agent-browser() {
+	guard agent-browser
+
+	npm agent-browser
+	defer <<<"agent-browser install"
+}
+
+android-studio() {
+	ANDROIDVS="${ANDROIDVS:-2025.1.3.7}"
+
+	guard android-studio
+
+	deb https://download.oracle.com/java/21/latest/jdk-21_linux-x64_bin.deb
+	apt aapt
+	apt adb
+	apt bridge-utils
+	apt lib32z1
+	#apt libbz2-1.0:i386
+	#apt libc6:i386
+	apt libguestfs-tools
+	#apt libncurses5:i386
+	#apt libstdc++6:i386
+	apt libvirt-clients
+	apt libvirt-daemon-system
+	apt openjdk-21-jdk
+	apt qemu-kvm
+	apt virtinst
+	apt virt-manager
+	apt virt-top
+	tar --keep android-studio android-studio/bin/studio.sh https://redirector.gvt1.com/edgedl/android/studio/ide-zips/$ANDROIDVS/android-studio-$ANDROIDVS-linux.tar.gz
+	defer <<-SH
+		cat <<-EOF > /usr/share/applications/android-studio.desktop
+			[Desktop Entry]
+			Name=Android Studio
+			Name[en_GB]=android-studio.desktop
+			Categories=Development;IDE;
+			Icon=/opt/android-studio/android-studio/bin/studio.png
+
+			Type=Application
+			Version=1.0
+
+			Exec=bash -i "/opt/android-studio/android-studio/bin/studio.sh" %f
+			Terminal=false
+			StartupNotify=true
+			StartupWMClass=jetbrains-android-studio
+		EOF
+	SH
+}
+
+antlr4() {
+	guard antlr4
+
+	bin antlr4 https://www.antlr.org/download/antlr-4.13.2-complete.jar
+	defer <<<"sed -i '1i#!/bin/java -jar' /usr/local/bin/antlr4"
+}
+
+aws-cli() {
+	guard aws
+
+	zip --keep aws-install aws/install https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip
+	defer <<<"/opt/aws-install/aws/install"
+	defer <<<"rm -rf /opt/aws-install"
+	defer <<<"rm -f /usr/local/bin/aws-install"
+}
+
+az-cli() {
+	guard az
+
+	key azure-cli https://packages.microsoft.com/keys/microsoft.asc
+	src azure-cli https://packages.microsoft.com/repos/azure-cli/ $VERSION_CODENAME main
+	apt azure-cli
+}
+
+chromium() {
+	guard chromium
+
+	key chromium "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x869689FE09306074"
+	src chromium https://freeshell.de/phd/chromium/$VERSION_CODENAME /
+	apt chromium
+	defer <<-SH
+		cat <<-EOF > /usr/share/applications/Chromium.desktop
+			#!/user/bin/env xdg-open
+			[Desktop Entry]
+			Name=Chromium
+			Keywords=Chrome;
+
+			Type=Application
+			Version=1.0
+
+			Exec="/usr/bin/chromium"
+			Terminal=false
+		EOF
+	SH
+}
+
+ci-tools() {
+	guard yq
+
+	key github https://cli.github.com/packages/githubcli-archive-keyring.gpg
+	src github https://cli.github.com/packages stable main
+	apt gh
+	apt git
+
+	apt gettext
+	apt gron
+	apt httpie
+	apt jq
+	apt patch
+	apt python3-html2text # HTML to Markdown
+	deb https://github.com/shopify/ejson/releases/download/v1.5.2/ejson_1.5.2_linux_$ARCH.deb # @see https://github.com/shopify/ejson
+	bin eyaml https://raw.githubusercontent.com/curatorium/eyaml/refs/heads/main/eyaml # @see https://github.com/curatorium/eyaml
+	deb https://github.com/skeema/skeema/releases/latest/download/skeema_$ARCH.deb # Declarative SQL migrations @see https://skeema.io/
+	on-amd64 deb https://github.com/harelba/q/releases/download/v3.1.6/q-text-as-data-3.1.6-1.x86_64.deb # Q for CSV querying @see https://harelba.github.io/q/
+	bin wait-until https://raw.githubusercontent.com/nickjj/wait-until/v0.3.0/wait-until # @see https://github.com/nickjj/wait-until
+	bin yq https://github.com/mikefarah/yq/releases/download/v4.35.2/yq_linux_$ARCH # YAML manipulation @see https://mikefarah.gitbook.io/yq/
+	# pup CSS selectors in the CLI
+	zip pup pup https://github.com/ericchiang/pup/releases/download/v0.4.0/pup_v0.4.0_linux_$ARCH.zip
+}
+
+claude-code() {
+	guard claude
+
+	npm @anthropic-ai/claude-code
+}
+
+composer() {
+	guard composer
+
+	ext https://getcomposer.org/installer php -- --2 --install-dir=/usr/local/bin --filename=composer
+}
+
+compression-tools() {
+	guard 7z
+
+	apt 7zip
+	apt bzip2
+	apt tar
+	apt unzip
+	apt xz-utils
+	apt zip
+}
+
+debug-basics() {
+	guard telnet
+
+	apt bash-completion
+	apt inetutils-ping
+	apt less
+	apt nano
+	apt readline-common
+	apt telnet
+}
+
+debug-clients() {
+	guard redis-tools
+
+	apt libfcgi0ldbl
+	apt libmemcached-tools
+	apt mariadb-client
+	apt openssh-client
+	apt redis-tools
+}
+
+debug-networking() {
+	guard socat
+
+	apt dnsutils
+	apt iproute2
+	apt netcat-traditional
+	apt net-tools
+	apt socat
+	apt whois
+}
+
+diff-so-fancy() {
+	guard diff-so-fancy
+
+	key diff-so-fancy "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x4466B73F97EF279EC64D8A169E8A0C808486162E"
+	src diff-so-fancy https://ppa.launchpadcontent.net/aos1/diff-so-fancy/ubuntu/ jammy main
+	apt diff-so-fancy
+}
+
+discord() {
+	DISCORDVS="${DISCORDVS:-0.0.120}"
+
+	guard discord
+
+	deb https://stable.dl2.discordapp.net/apps/linux/$DISCORDVS/discord-$DISCORDVS.deb
+}
+
+disk-utils() {
+	guard fio
+
+	apt iotop
+	apt fio
+	apt gparted
+}
+
+displaylink() {
+	guard displaylink
+
+	src https://www.synaptics.com/sites/default/files/Ubuntu/pool/stable/main/all/synaptics-repository-keyring.deb
+	apt displaylink-driver
+}
+
+docker() {
+	guard docker
+
+	key docker https://download.docker.com/linux/ubuntu/gpg
+	src docker https://download.docker.com/linux/ubuntu $VERSION_CODENAME stable
+	apt docker-ce
+	apt docker-ce-cli
+	apt docker-compose-plugin
+	apt docker-buildx-plugin
+	defer <<<"usermod -aG docker $USER"
+}
+
+dotfiles() {
+	guard --file .bash_aliases
+
+	defer <<-SH
+		[[ -d /home/$USER/Dropbox/etc ]] || exit 0
+
+		for src in /home/$USER/Dropbox/etc/.* /home/$USER/Dropbox/etc/[A-Z]*; do
+			[[ -e "\$src" ]] || continue
+			name=\$(basename "\$src")
+			[[ "\$name" == ".config" ]] && continue
+			ln -sf "\$src" /home/$USER/"\$name"
+		done
+
+		mkdir -p /home/$USER/.config
+		for src in /home/$USER/Dropbox/etc/.config/*; do
+			[[ -e "\$src" ]] || continue
+			ln -sf "\$src" /home/$USER/.config/\$(basename "\$src")
+		done
+
+		# Disable display dimming
+		GS="sudo -u $USER DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/\$(id -u $USER)/bus gsettings"
+		\$GS set org.gnome.settings-daemon.plugins.power ambient-enabled false
+		\$GS set org.gnome.settings-daemon.plugins.power idle-dim false
+		\$GS set org.gnome.desktop.screensaver idle-activation-enabled false
+		\$GS set org.gnome.desktop.screensaver lock-enabled false
+		sudo -u $USER xset s off
+		sudo -u $USER xset -dpms
+		sudo -u $USER xset s noblank
+	SH
+}
+
+dropbox() {
+	guard dropbox
+
+	deb "https://www.dropbox.com/download?dl=packages/ubuntu/dropbox_2020.03.04_amd64.deb"
+}
+
+element() {
+	guard element-desktop
+
+	key element https://packages.element.io/debian/element-io-archive-keyring.gpg
+	src element https://packages.element.io/debian/ default main
+	apt element-desktop
+}
+
+firacode() {
+	apt fonts-firacode
+}
+
+flameshot() {
+	guard flameshot
+
+	apt flameshot
+	apt libglib2.0-bin
+	defer <<-SH
+		GS="sudo -u $USER DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/\$(id -u $USER)/bus gsettings"
+
+		# Disable GNOME's built-in screenshot UI on PrintScreen
+		\$GS set org.gnome.shell.keybindings show-screenshot-ui '[]'
+
+		# Register custom keybinding slot
+		KEYBINDINGS=\$(\$GS get org.gnome.settings-daemon.plugins.media-keys custom-keybindings)
+		if [[ "\$KEYBINDINGS" != *"flameshot"* ]]; then
+			KEYBINDINGS=\$(echo "\$KEYBINDINGS" | sed "s|]|, '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/flameshot/']|; s|\[, |[|")
+			\$GS set org.gnome.settings-daemon.plugins.media-keys custom-keybindings "\$KEYBINDINGS"
+		fi
+
+		# Bind PrintScreen to flameshot gui (area selection)
+		\$GS set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/flameshot/ name 'Flameshot Screenshot'
+		\$GS set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/flameshot/ command 'flameshot gui'
+		\$GS set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/flameshot/ binding 'Print'
+	SH
+}
+
+fprintd() {
+	FPRINTBRCMVS="${FPRINTBRCMVS:-6.4.334_6.4.054.0}"
+
+	guard fprintd
+
+	apt libpam-fprintd
+	apt fprintd
+	apt libfprint-2-tod1
+
+	# Broadcom ControlVault3 Plus (0a5c:5864-5867) fingerprint driver
+	tar --keep fprint-broadcom brcm_linux_fp/install.sh https://packages.broadcom.com/artifactory/dell-controlvault-drivers/brcm_linux_fp_$FPRINTBRCMVS.tgz
+	defer <<<"mkdir -p /var/lib/fprint/.broadcomCv3plusFW"
+	defer <<<"cd /opt/fprint-broadcom/brcm_linux_fp && sh install.sh"
+	defer <<<"rm -rf /opt/fprint-broadcom /usr/local/bin/fprint-broadcom"
+	defer <<<"udevadm control --reload-rules && udevadm trigger"
+	defer <<<"systemctl restart fprintd"
+}
+
+geany() {
+	guard geany
+
+	apt geany
+}
+
+gimp() {
+	guard gimp
+
+	apt gimp
+}
+
+helm() {
+	guard helm
+
+	key helm https://packages.buildkite.com/helm-linux/helm-debian/gpgkey
+	src helm https://packages.buildkite.com/helm-linux/helm-debian/any/ any main
+	apt helm
+}
+
+howdy() {
+	guard howdy
+
+	key howdy "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x8CEBC97F3E9E1D58"
+	src howdy http://ppa.launchpad.net/boltgolt/howdy/ubuntu $VERSION_CODENAME main
+	apt howdy
+	pip numpy==1.26.4
+	defer <<<"sed -iE 's:device_path = [^\n]+:device_path = /dev/video0:' /lib/security/howdy/config.ini"
+}
+
+jetbrains-toolbox() {
+	JETBRAINSVS="${JETBRAINSVS:-2.8.1.52155}"
+
+	guard jetbrains-toolbox
+
+	tar --keep jetbrains-toolbox jetbrains-toolbox-$JETBRAINSVS/bin/jetbrains-toolbox https://download-cdn.jetbrains.com/toolbox/jetbrains-toolbox-$JETBRAINSVS.tar.gz
+}
+
+kubectl() {
+	#KUBECTLVS="$(curl -1fsSLR https://dl.k8s.io/release/stable.txt)"
+	KUBECTLVS="${KUBECTLVS:-v1.33.4}"
+	KUBECTLVS="${KUBECTLVS%.*}"
+
+	guard kubectl
+
+	key kubernetes https://pkgs.k8s.io/core:/stable:/$KUBECTLVS/deb/Release.key
+	src kubernetes https://pkgs.k8s.io/core:/stable:/$KUBECTLVS/deb/ /
+	apt kubectl
+}
+
+newrelic() {
+	PHPVS="${PHPVS:-8.2}"
+
+	guard --file /etc/php/$PHPVS/mods-available/newrelic.ini
+
+	# APM Agent @see https://docs.newrelic.com/docs/apm/agents/php-agent/installation/php-agent-installation-ubuntu-debian/
+	key newrelic https://download.newrelic.com/NEWRELIC_APT_2DAD550E.public
+	src newrelic http://apt.newrelic.com/debian/ newrelic non-free
+	on-amd64 apt newrelic-php5
+	defer <<<"phpdismod newrelic"
+}
+
+newrelic-cli() {
+	guard newrelic
+
+	deb https://github.com/newrelic/newrelic-cli/releases/download/v0.106.9/newrelic-cli_0.106.9_Linux_$(uname -m).deb
+}
+
+nodejs() {
+	NODEVS="${NODEVS:-22}"
+
+	guard node
+
+	# @see https://downloads.nodesource.com/
+	key nodesource https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key
+	src nodesource https://deb.nodesource.com/node_$NODEVS.x nodistro main
+	apt nodejs
+	npm yarn
+}
+
+nordvpn() {
+	guard nordvpn
+
+	key nordvpn https://repo.nordvpn.com/gpg/nordvpn_public.asc
+	src nordvpn https://repo.nordvpn.com/deb/nordvpn/debian stable main
+	apt nordvpn
+	apt nordvpn-gui
+	defer <<<"usermod -aG nordvpn $USER"
+}
+
+nushell() {
+	guard nu
+
+	# @see https://nushell.sh
+	key nushell https://apt.fury.io/nushell/gpg.key
+	src nushell https://apt.fury.io/nushell/ /
+	apt nushell
+}
+
+nvidia() {
+	guard nvidia-container-cli
+
+	key nvidia https://nvidia.github.io/libnvidia-container/gpgkey
+	src nvidia https://nvidia.github.io/libnvidia-container/stable/deb/$ARCH /
+	apt nvidia-container-toolkit '=1.17.8-1'
+	apt nvidia-container-toolkit-base '=1.17.8-1'
+	apt libnvidia-container-tools '=1.17.8-1'
+	apt libnvidia-container1 '=1.17.8-1'
+	defer <<-SH
+		nvidia-ctk runtime configure --runtime=docker
+		systemctl restart docker
+	SH
+}
+
+ollama() {
+	guard ollama
+
+	ext https://ollama.com/install.sh
+}
+
+performance() {
+	guard smartmontools
+
+	apt atop
+	apt bmon
+	apt dstat
+	apt glances
+	apt htop
+	apt iftop
+	apt lm-sensors
+	apt ltrace
+	apt ncdu
+	apt nethogs
+	apt nload
+	apt nmon
+	apt psensor
+	apt smartmontools
+	apt strace
+	apt sysstat
+}
+
+php() {
+	PHPVS="${PHPVS:-8.2}"
+
+	guard php
+
+	# Ondrej Sury @see https://deb.sury.org/
+	key php "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xB8DC7E53946656EFBCE4C1DD71DAEAAB4AD4CAB6"
+	src php https://ppa.launchpadcontent.net/ondrej/php/ubuntu $VERSION_CODENAME main
+	apt php$PHPVS-amqp
+	apt php$PHPVS-apcu
+	apt php$PHPVS-bcmath
+	apt php$PHPVS-cli
+	apt php$PHPVS-common
+	apt php$PHPVS-curl
+	apt php$PHPVS-fpm
+	apt php$PHPVS-gd
+	apt php$PHPVS-http
+	apt php$PHPVS-igbinary
+	apt php$PHPVS-intl
+	apt php$PHPVS-mbstring
+	apt php$PHPVS-mongodb
+	apt php$PHPVS-msgpack
+	apt php$PHPVS-mysql
+	apt php$PHPVS-odbc
+	apt php$PHPVS-pcov
+	apt php$PHPVS-pgsql
+	apt php$PHPVS-phpdbg
+	apt php$PHPVS-protobuf
+	apt php$PHPVS-raphf
+	apt php$PHPVS-readline
+	apt php$PHPVS-redis
+	apt php$PHPVS-soap
+	apt php$PHPVS-sqlite3
+	apt php$PHPVS-ssh2
+	apt php$PHPVS-stomp
+	apt php$PHPVS-xdebug
+	apt php$PHPVS-xml
+	apt php$PHPVS-xsl
+	apt php$PHPVS-yaml
+	apt php$PHPVS-zip
+	apt --try php$PHPVS-grpc
+	apt --try php$PHPVS-memcached
+	apt --try php$PHPVS-opcache
+	apt --try php$PHPVS-zmq
+	defer <<<"phpdismod pcov"
+	defer <<<"phpdismod xdebug"
+}
+
+php-imagick() {
+	PHPVS="${PHPVS:-8.2}"
+
+	guard --file /etc/php/$PHPVS/mods-available/imagick.ini
+
+	apt php$PHPVS-imagick
+	apt ghostscript
+	apt gifsicle
+	apt imagemagick
+	apt jpegoptim
+	apt optipng
+	apt pngquant
+}
+
+php-timezonedb() {
+	PHPVS="${PHPVS:-8.2}"
+
+	guard --file /etc/php/$PHPVS/mods-available/timezonedb.ini
+
+	apt locales
+	apt tzdata
+	apt --temp make
+	apt --temp php$PHPVS-dev
+	apt --temp php-pear
+	defer <<-SH
+		pecl channel-update pecl.php.net;
+		pecl install timezonedb;
+		echo "extension=timezonedb.so" > /etc/php/$PHPVS/mods-available/timezonedb.ini;
+		phpenmod timezonedb;
+	SH
+}
+
+powershell() {
+	guard pwsh
+
+	src https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb
+	apt powershell
+}
+
+snyk() {
+	guard snyk
+
+	on-amd64 bin snyk https://downloads.snyk.io/cli/stable/snyk-linux
+	on-arm64 bin snyk https://downloads.snyk.io/cli/stable/snyk-linux-arm64
+}
+
+starship() {
+	guard starship
+
+	ext https://starship.rs/install.sh sh -v latest
+}
+
+steam() {
+	guard steam
+
+	key steam https://repo.steampowered.com/steam/archive/stable/steam.gpg
+	src steam https://repo.steampowered.com/steam/ stable steam
+	apt steam-installer
+	defer <<<"steam"
+}
+
+synaptic() {
+	guard synaptic
+
+	apt synaptic
+}
+
+terminator() {
+	guard terminator
+
+	apt terminator
+}
+
+utils() {
+	guard fzf
+
+	apt bsdextrautils
+	apt bsdmainutils
+	apt coreutils
+	apt debian-goodies
+	apt diffutils
+	apt findutils
+	apt fzf
+	apt moreutils
+	apt util-linux
+	apt x11-utils
+}
+
+virtualbox() {
+	guard virtualbox
+
+	eager <<<"ln -sf /usr/src/linux-headers-\$(uname -r)/arch/x86 /usr/src/linux-headers-\$(uname -r)/arch/amd64"
+	apt virtualbox
+	apt virtualbox-dkms
+	apt virtualbox-guest-additions-iso
+	apt virtualbox-qt
+}
+
+vlc() {
+	guard vlc
+
+	apt vlc
+}
+
+whatsapp() {
+	guard whatsapp
+
+	bin whatsapp https://github.com/WAClient/WALC/releases/download/v0.3.3/WALC-0.3.3.AppImage
+	defer <<-SH
+		cat <<-EOF > /usr/share/applications/WhatsApp.desktop
+			#!/user/bin/env xdg-open
+			[Desktop Entry]
+			Name=WhatsApp
+			Keywords=WALC;walc;
+			Icon=/home/mihai-stancu/.local/share/WALC/logo360x360.png
+
+			Type=Application
+			Version=1.0
+
+			Exec="/usr/local/bin/whatsapp"
+			Terminal=false
+		EOF
+	SH
+}
+
+# vim: noet
