@@ -11,9 +11,8 @@ curl -fsSL https://github.com/mihai-stancu/dotfiles/archive/refs/heads/main.tar.
 	| tar -xz -C "$tmp" --strip-components=1
 
 for src in "$tmp"/.* "$tmp"/[A-Z]*; do
-	[ -e "$src" ] || continue
 	name="$(basename "$src")"
-	case "$name" in .|..) continue ;; esac
+	[[ -e "$src" && "$name" != "." && "$name" != ".." ]] || continue
 	[ -d "$src" ] && cp -r "$src" ~/"$name" || cp "$src" ~/"$name"
 done
 [ -d "$tmp/.config" ] && mkdir -p ~/.config && cp -r "$tmp/.config"/* ~/.config/
