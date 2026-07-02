@@ -1,0 +1,8 @@
+.ssh/config
+.ssh/id_rsa
+.ssh/id_rsa_df
+.ssh/digibook_rsa
+.gnupg/pubring.kbx
+.gnupg/trustdb.gpg
+.gnupg/private-keys-v1.d/*
+.gnupg/openpgp-revocs.d/*

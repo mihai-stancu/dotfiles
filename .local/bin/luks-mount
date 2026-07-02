@@ -1,0 +1,42 @@
+#!/bin/bash -e
+
+IMG=${1:?'Specify image file'};
+DIR="$(dirname "$IMG")";
+NAME="$(basename -s .img "$IMG")";
+HOME="$(eval echo ~$SUDO_USER)";
+
+function do-validate() {
+    [[ -f "$IMG" ]] && return;
+    echo "Error: File $IMG does not exist.";
+    exit 1;
+}
+
+function do-luks-mount() {
+    mkdir -p "$HOME/$NAME";
+    cryptsetup luksOpen "$IMG" "$NAME" || true;
+    chown "$SUDO_USER:$SUDO_USER" "/dev/mapper/$NAME";
+    mount "/dev/mapper/$NAME" "$HOME/$NAME";
+    chown -R "$SUDO_USER:$SUDO_USER" "$HOME/$NAME";
+    exit 0;
+}
+
+function do-luks-unmount() {
+    cryptsetup luksClose "$NAME";
+    umount "$HOME/$NAME" || true;
+    #rmdir "$HOME/$NAME";
+    exit 0;
+}
+function do-luks-umount() {
+	do-luks-unmount;
+}
+
+# Run as sudo
+[[ $EUID -ne 0 ]] &&  exec sudo "$0" "$@";
+
+cd "$DIR";
+do-validate;
+"do-$(basename "$0")";
+cd -;
+
+echo "Usage: $0 <image-file>";
+exit 1;

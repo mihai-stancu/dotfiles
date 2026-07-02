@@ -1,0 +1,114 @@
+source /usr/share/bash-completion/bash_completion
+source /usr/share/doc/fzf/examples/key-bindings.bash
+source <(kubectl completion bash)
+complete -W "$(tldr 2>/dev/null --list)" tldr
+
+#region kubernetes completions
+
+# Running pod names — for kpod/kpods/kexec/klogs/kcp (first arg only).
+_k_pod() {
+  local cur="${COMP_WORDS[COMP_CWORD]}";
+  [[ $COMP_CWORD -ne 1 ]] && return;
+  local kc="${KUBECTL:-kubectl}";
+  COMPREPLY=( $(compgen -W "$($kc get pods --no-headers 2>/dev/null | awk '{print $1}')" -- "$cur") );
+}
+
+# Prefixed resources for kget/krestart/kedit — short prefixes are sed-expanded
+# by those functions, so offer d/ c/ i/ s/ then names of the chosen kind.
+_k_resource() {
+  local cur="${COMP_WORDS[COMP_CWORD]}";
+  [[ $COMP_CWORD -ne 1 ]] && return;
+  local kc="${KUBECTL:-kubectl}" kind;
+  case "$cur" in
+    d/*|deploy/*)             kind=deploy;   ;;
+    c/*|cron/*|cronjob/*)     kind=cronjob;  ;;
+    i/*|ingress/*)            kind=ingress;  ;;
+    s/*|service/*)            kind=service;  ;;
+    */*)                      kind="${cur%%/*}"; ;;
+    *)
+      COMPREPLY=( $(compgen -W "d/ c/ i/ s/ deploy/ cronjob/ ingress/ service/" -- "$cur") );
+      compopt -o nospace 2>/dev/null;
+      return ;;
+  esac
+  local pfx="${cur%%/*}/" n list="";
+  for n in $($kc get "$kind" --no-headers 2>/dev/null | awk '{print $1}'); do
+    list+="$pfx$n ";
+  done
+  COMPREPLY=( $(compgen -W "$list" -- "$cur") );
+}
+
+# kdbg passes its target straight to kubectl (no sed-expansion), so only the
+# full deploy/ and cronjob/ forms are valid.
+_k_target() {
+  local cur="${COMP_WORDS[COMP_CWORD]}";
+  [[ $COMP_CWORD -ne 1 ]] && return;
+  local kc="${KUBECTL:-kubectl}" kind;
+  case "$cur" in
+    deploy/*|deployment/*) kind="${cur%%/*}"; ;;
+    cronjob/*)             kind=cronjob;      ;;
+    */*)                   kind="${cur%%/*}"; ;;
+    *)
+      COMPREPLY=( $(compgen -W "deploy/ cronjob/" -- "$cur") );
+      compopt -o nospace 2>/dev/null;
+      return ;;
+  esac
+  local pfx="${cur%%/*}/" n list="";
+  for n in $($kc get "$kind" --no-headers 2>/dev/null | awk '{print $1}'); do
+    list+="$pfx$n ";
+  done
+  COMPREPLY=( $(compgen -W "$list" -- "$cur") );
+}
+
+# kns — namespace names.
+_k_ns() {
+  local cur="${COMP_WORDS[COMP_CWORD]}";
+  [[ $COMP_CWORD -ne 1 ]] && return;
+  local kc="${KUBECTL:-kubectl}";
+  COMPREPLY=( $(compgen -W "$($kc get ns --no-headers 2>/dev/null | awk '{print $1}')" -- "$cur") );
+}
+
+# ktxt — context (1st arg), then namespace (2nd arg).
+_k_ctx() {
+  local cur="${COMP_WORDS[COMP_CWORD]}";
+  local kc="${KUBECTL:-kubectl}";
+  case $COMP_CWORD in
+    1) COMPREPLY=( $(compgen -W "$($kc config get-contexts -o name 2>/dev/null)" -- "$cur") ); ;;
+    2) COMPREPLY=( $(compgen -W "$($kc get ns --no-headers 2>/dev/null | awk '{print $1}')" -- "$cur") ); ;;
+  esac
+}
+
+complete -F _k_pod      kcp kexec klogs kpod kpods
+complete -F _k_resource kget krestart kedit
+complete -F _k_target   kdbg
+complete -F _k_ns       kns
+complete -F _k_ctx      ktxt
+
+#endregion kubernetes completions
+
+#region docker compose completions
+
+# Service names from the compose file in $PWD.
+_dc_services() {
+  docker compose config --services 2>/dev/null;
+}
+
+# dc — compose subcommand (1st arg), then service (2nd arg).
+_dc() {
+  local cur="${COMP_WORDS[COMP_CWORD]}";
+  case $COMP_CWORD in
+    1) COMPREPLY=( $(compgen -W "build exec logs run up down restart ps config pull push stop start kill" -- "$cur") ); ;;
+    2) COMPREPLY=( $(compgen -W "$(_dc_services)" -- "$cur") ); ;;
+  esac
+}
+
+# dcb/dce/dcl/dcr/dcx — service is the first arg.
+_dc_service() {
+  local cur="${COMP_WORDS[COMP_CWORD]}";
+  [[ $COMP_CWORD -ne 1 ]] && return;
+  COMPREPLY=( $(compgen -W "$(_dc_services)" -- "$cur") );
+}
+
+complete -F _dc         dc
+complete -F _dc_service dcb dce dcl dcr dcx
+
+#endregion docker compose completions

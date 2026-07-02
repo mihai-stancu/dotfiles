@@ -1,0 +1,451 @@
+#!/bin/bash
+# /usr/local/bin/diskmon — disk monitoring toolkit, single-binary interface.
+# Config: /etc/disk-monitor/disk-monitor.conf
+# Subcommands: alert event-watch stall-watch snapshot digest selftest status help
+# (smartd invokes this with no args + SMARTD_* env -> routed to the smartd hook.)
+
+# ---------------------------------------------------------------------------
+# Globals — defaults here; the conf file overrides them; readonly after load.
+# ---------------------------------------------------------------------------
+DISKMON_CONF="${DISKMON_CONF:-/etc/disk-monitor/disk-monitor.conf}";
+DISKMON_RUN_DIR="${DISKMON_RUN_DIR:-/run/disk-monitor}";
+DISKMON_LOG_TAG="diskmon";
+DEVICE="/dev/nvme0n1";
+DESKTOP_USER="";
+DESKTOP_DISPLAY=":1";
+NTFY_SERVER="https://ntfy.sh";
+NTFY_TOPIC="";
+DEBOUNCE_SECS=300;
+TEMP_WARN=70;
+TEMP_CRIT=82;
+STALL_PROBE_SECS=30;
+STALL_THRESHOLD_SECS=3;
+STALL_TIMEOUT_SECS=10;
+EVENT_POLL_SECS=15;
+METRICS_CSV="/var/log/disk-monitor/metrics.csv";
+LATENCY_CSV="/var/log/disk-monitor/latency.csv";
+
+readonly DISKMON_EVENT_PAT='nvme[0-9].*(reset|timeout|abort|controller is down|I/O|does not support|failed to set APST)|pcieport.*AER|PCIe Bus Error|blk_update_request.*error|Buffer I/O error|critical (target|medium)|EXT4-fs (error|warning)|pcie.*link down|[Hh]ardware [Ee]rror|Machine [Cc]heck|md/raid.*error';
+readonly DISKMON_CRIT_PAT='EXT4-fs error|controller is down|blk_update_request.*error|Buffer I/O error|Machine [Cc]heck|[Hh]ardware [Ee]rror|uncorrectable|critical medium';
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+# @name diskmon
+# @type command
+# @desc Unified entry point; loads config and routes to a subcommand.
+# @usage diskmon <subcommand> [args...]
+# @return 0 success, 1 failure
+function diskmon:main() {
+    [[ "${BASH_SOURCE[0]}" != "$0" ]] && return;
+
+    set -Eeuo pipefail;
+    shopt -s inherit_errexit;
+    trap 'trap - SIGTERM; kill -- -$$' SIGTERM;
+
+    diskmon::load-config;
+    diskmon::ensure-run-dir;
+
+    local cmd;
+    if [[ $# -eq 0 ]] && [[ -n "${SMARTD_MESSAGE:-}${SMARTD_DEVICE:-}" ]]; then
+        cmd="smartd-hook";
+    else
+        cmd="${1:-help}";
+        shift || true;
+    fi;
+    local -a args=("$@");
+
+    command -v "diskmon:${cmd}" > /dev/null 2>&1 || diskmon::unknown-cmd "$cmd";
+    "diskmon:${cmd}" "${args[@]}";
+};
+
+# ---------------------------------------------------------------------------
+# Config + runtime
+# ---------------------------------------------------------------------------
+
+# @name diskmon
+# @type internal
+# @desc Source the conf file, re-apply defaults for unset vars, then freeze them.
+function diskmon::load-config() {
+    # shellcheck source=/dev/null
+    [[ -f "$DISKMON_CONF" ]] && source "$DISKMON_CONF";
+
+    DEVICE="${DEVICE:-/dev/nvme0n1}";
+    DESKTOP_USER="${DESKTOP_USER:-}";
+    DESKTOP_DISPLAY="${DESKTOP_DISPLAY:-:1}";
+    NTFY_SERVER="${NTFY_SERVER:-https://ntfy.sh}";
+    NTFY_TOPIC="${NTFY_TOPIC:-}";
+    DEBOUNCE_SECS="${DEBOUNCE_SECS:-300}";
+    TEMP_WARN="${TEMP_WARN:-70}";
+    TEMP_CRIT="${TEMP_CRIT:-82}";
+    STALL_PROBE_SECS="${STALL_PROBE_SECS:-30}";
+    STALL_THRESHOLD_SECS="${STALL_THRESHOLD_SECS:-3}";
+    STALL_TIMEOUT_SECS="${STALL_TIMEOUT_SECS:-10}";
+    EVENT_POLL_SECS="${EVENT_POLL_SECS:-15}";
+    METRICS_CSV="${METRICS_CSV:-/var/log/disk-monitor/metrics.csv}";
+    LATENCY_CSV="${LATENCY_CSV:-/var/log/disk-monitor/latency.csv}";
+
+    readonly DEVICE DESKTOP_USER DESKTOP_DISPLAY NTFY_SERVER NTFY_TOPIC \
+             DEBOUNCE_SECS TEMP_WARN TEMP_CRIT STALL_PROBE_SECS \
+             STALL_THRESHOLD_SECS STALL_TIMEOUT_SECS EVENT_POLL_SECS \
+             METRICS_CSV LATENCY_CSV DISKMON_LOG_TAG;
+};
+
+# @name diskmon
+# @type internal
+# @desc Ensure the runtime state directory exists.
+function diskmon::ensure-run-dir() {
+    mkdir -p "$DISKMON_RUN_DIR";
+};
+
+# ---------------------------------------------------------------------------
+# Help
+# ---------------------------------------------------------------------------
+
+# @name diskmon
+# @type subcommand
+# @desc Print usage and exit 0.
+# @usage diskmon help
+function diskmon:help() {
+    cat <<-USAGE
+	Usage: diskmon <subcommand> [args...]
+
+	Subcommands:
+	  alert <severity> <title> <msg...>   Dispatch alert (info|notice|warning|critical).
+	  event-watch                         Poll kernel log for disk errors (long-running).
+	  stall-watch                         Timed 4K reads; alert on stall/freeze (long-running).
+	  snapshot                            Capture SMART metrics to CSV; threshold + delta alerts.
+	  digest                              Send daily summary notice.
+	  selftest <short|long>               Trigger a SMART self-test.
+	  status                              Human-readable health summary (auto-sudo).
+	  help                                Print this message.
+
+	Config: ${DISKMON_CONF}
+	USAGE
+};
+
+# ---------------------------------------------------------------------------
+# Subcommands
+# ---------------------------------------------------------------------------
+
+# @name diskmon
+# @type subcommand
+# @desc Dispatch an alert via journald, desktop notify-send, and ntfy push.
+# @usage diskmon alert <info|notice|warning|critical> <title> <msg...>
+# @return 0 always (alert delivery is non-fatal by design).
+function diskmon:alert() {
+    local severity="${1?ERROR: missing severity}"; shift || return;
+    local title="${1?ERROR: missing title}"; shift || return;
+    local msg="$*";
+
+    local priority; priority="$(diskmon::severity-to-priority "$severity")";
+    diskmon::log "$priority" "[${severity}] ${title}: ${msg}";
+
+    diskmon::debounced "$severity" "$title" "$msg" || return 0;
+    diskmon::notify-desktop "$severity" "$title" "$msg";
+    diskmon::notify-ntfy "$severity" "$title" "$msg";
+    return 0;
+};
+
+# @name diskmon
+# @type subcommand
+# @desc Poll the kernel journal for disk error patterns; alert on match. Runs until killed.
+# @usage diskmon event-watch
+function diskmon:event-watch() {
+    local cursor="${DISKMON_RUN_DIR}/event.cursor";
+    [[ -f "$cursor" ]] || journalctl -k -n1 --cursor-file="$cursor" > /dev/null 2>&1 || true;
+    while true; do
+        diskmon::scan-events "$cursor" || diskmon::err "[event-watch] scan failed";
+        sleep "$EVENT_POLL_SECS";
+    done;
+};
+
+# @name diskmon
+# @type subcommand
+# @desc Timed 4K direct reads of DEVICE; alert on stall or freeze. Runs until killed.
+# @usage diskmon stall-watch
+function diskmon:stall-watch() {
+    [[ -f "$LATENCY_CSV" ]] || echo "ts,probe_seconds" > "$LATENCY_CSV";
+    while true; do
+        diskmon::probe-stall || diskmon::err "[stall-watch] probe error";
+        sleep "$STALL_PROBE_SECS";
+    done;
+};
+
+# @name diskmon
+# @type subcommand
+# @desc Capture a SMART metrics snapshot to CSV and fire threshold/delta alerts.
+# @usage diskmon snapshot
+function diskmon:snapshot() {
+    local json; json="$(smartctl -j -a "$DEVICE" 2>/dev/null || true)";
+    [[ -n "$json" ]] || return 0;
+    mkdir -p "$(dirname "$METRICS_CSV")";
+
+    local h='.nvme_smart_health_information_log';
+    local ts temp cw spare pct media errlog unsafe dur duw;
+    ts="$(date +%s)";
+    temp="$(diskmon::jq-field "$json" '.temperature.current')";
+    cw="$(diskmon::jq-field "$json" "${h}.critical_warning")";
+    spare="$(diskmon::jq-field "$json" "${h}.available_spare")";
+    pct="$(diskmon::jq-field "$json" "${h}.percentage_used")";
+    media="$(diskmon::jq-field "$json" "${h}.media_errors")";
+    errlog="$(diskmon::jq-field "$json" "${h}.num_err_log_entries")";
+    unsafe="$(diskmon::jq-field "$json" "${h}.unsafe_shutdowns")";
+    dur="$(diskmon::jq-field "$json" "${h}.data_units_read")";
+    duw="$(diskmon::jq-field "$json" "${h}.data_units_written")";
+
+    [[ -f "$METRICS_CSV" ]] || echo "ts,temp,critical_warning,available_spare,percentage_used,media_errors,num_err_log_entries,unsafe_shutdowns,data_units_read,data_units_written" > "$METRICS_CSV";
+    echo "${ts},${temp},${cw},${spare},${pct},${media},${errlog},${unsafe},${dur},${duw}" >> "$METRICS_CSV";
+
+    diskmon::snapshot-alerts "$temp" "$cw" "$spare" "$pct" "$media" "$errlog";
+};
+
+# @name diskmon
+# @type subcommand
+# @desc Send a daily digest notice with 24h alert count and SMART summary.
+# @usage diskmon digest
+function diskmon:digest() {
+    local json; json="$(smartctl -j -a "$DEVICE" 2>/dev/null || true)";
+    [[ -n "$json" ]] || return 0;
+    local h='.nvme_smart_health_information_log';
+    local selftest events msg;
+    selftest="$(smartctl -l selftest "$DEVICE" 2>/dev/null | grep -iE 'completed|failed|in progress' | head -1 | sed 's/  */ /g' || true)";
+    events="$(journalctl -t "$DISKMON_LOG_TAG" --since '24h ago' -p warning 2>/dev/null | grep -c "$DISKMON_LOG_TAG" || true)";
+    msg="$(printf 'temp=%sC used=%s%% spare=%s%% media_err=%s errlog=%s unsafe=%s | warn/crit(24h)=%s | selftest: %s' \
+        "$(diskmon::jq-field "$json" '.temperature.current')" \
+        "$(diskmon::jq-field "$json" "${h}.percentage_used")" \
+        "$(diskmon::jq-field "$json" "${h}.available_spare")" \
+        "$(diskmon::jq-field "$json" "${h}.media_errors")" \
+        "$(diskmon::jq-field "$json" "${h}.num_err_log_entries")" \
+        "$(diskmon::jq-field "$json" "${h}.unsafe_shutdowns")" \
+        "${events:-0}" \
+        "${selftest:-none yet}")";
+    diskmon:alert notice "Daily disk report (${DEVICE})" "$msg";
+};
+
+# @name diskmon
+# @type subcommand
+# @desc Trigger a SMART self-test (short or long).
+# @usage diskmon selftest <short|long>
+function diskmon:selftest() {
+    local mode="${1:-short}";
+    case "$mode" in
+        short|long) ;;
+        *) diskmon::die "[selftest] mode must be short|long, got: ${mode}";;
+    esac;
+    smartctl -t "$mode" "$DEVICE" > /dev/null 2>&1 || true;
+    diskmon::log info "[selftest] ${mode} self-test launched on ${DEVICE}";
+};
+
+# @name diskmon
+# @type subcommand
+# @desc Print a human-readable health summary (requires root; re-execs via sudo).
+# @usage diskmon status
+function diskmon:status() {
+    [[ "$(id -u)" = "0" ]] || exec sudo "$0" status;
+    echo "### SMART health — ${DEVICE}";
+    smartctl -H -A "$DEVICE" 2>/dev/null | grep -iE 'result|temperature|available_spare|percentage_used|media_and_data|error_information|unsafe_shutdowns' || true;
+    echo;
+    echo "### last 8 metric snapshots";
+    if [[ -f "$METRICS_CSV" ]]; then column -t -s, "$METRICS_CSV" | tail -n 9 || true; fi;
+    echo;
+    echo "### probe latency (last 8)";
+    if [[ -f "$LATENCY_CSV" ]]; then tail -n 8 "$LATENCY_CSV" || true; fi;
+    echo;
+    echo "### self-test log";
+    smartctl -l selftest "$DEVICE" 2>/dev/null | grep -iE 'num|completed|failed|progress' | head -5 || true;
+    echo;
+    echo "### diskmon alerts (48h)";
+    journalctl -t "$DISKMON_LOG_TAG" --since '48h ago' -p notice 2>/dev/null | tail -n 20 || true;
+};
+
+# @name diskmon
+# @type subcommand
+# @desc smartd -M exec target: maps SMARTD_* env into an alert. Invoked by smartd, not humans.
+# @usage (smartd) diskmon
+function diskmon:smartd-hook() {
+    local severity="warning";
+    [[ "${SMARTD_FAILTYPE:-}" =~ (health|failure|offline|selftest) ]] && severity="critical";
+    diskmon:alert "$severity" \
+        "SMART: ${SMARTD_FAILTYPE:-alert} on ${SMARTD_DEVICE:-disk}" \
+        "${SMARTD_FULLMESSAGE:-${SMARTD_MESSAGE:-see: journalctl -t smartd}}";
+};
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+# @name diskmon
+# @type internal
+# @desc Print error to stderr and journald, then exit 1.
+function diskmon::die() {
+    local msg="${1?ERROR: missing message}";
+    diskmon::err "$msg";
+    exit 1;
+};
+
+# @name diskmon
+# @type internal
+# @desc Print error to stderr and journald (non-fatal; safe inside loops).
+function diskmon::err() {
+    local msg="${1?ERROR: missing message}";
+    logger -s -t "$DISKMON_LOG_TAG" -p "daemon.err" -- "$msg" 2>&1 || true;
+};
+
+# @name diskmon
+# @type internal
+# @desc Write an informational message to journald only.
+function diskmon::log() {
+    local priority="${1?ERROR: missing priority}"; shift || return;
+    local msg="${1?ERROR: missing message}";
+    logger -t "$DISKMON_LOG_TAG" -p "daemon.${priority}" -- "$msg" 2>/dev/null || true;
+};
+
+# @name diskmon
+# @type internal
+# @desc Print unknown-subcommand error, show help on stderr, exit 1.
+function diskmon::unknown-cmd() {
+    local cmd="${1:-unknown}";
+    diskmon::err "[main] unknown subcommand: '${cmd}'";
+    diskmon:help >&2;
+    exit 1;
+};
+
+# @name diskmon
+# @type internal
+# @desc Map a severity word to a journald priority word.
+function diskmon::severity-to-priority() {
+    local severity="${1:-info}";
+    case "$severity" in
+        critical) echo "err";;
+        warning)  echo "warning";;
+        notice)   echo "notice";;
+        *)        echo "info";;
+    esac;
+};
+
+# @name diskmon
+# @type internal
+# @desc Return 0 if this alert should fire, 1 if it is within the debounce window.
+function diskmon::debounced() {
+    local severity="$1" title="$2" msg="$3";
+    local key stamp now last;
+    key="$(printf '%s' "${severity}|${title}|${msg}" | md5sum | cut -c1-16)";
+    stamp="${DISKMON_RUN_DIR}/last.${key}";
+    now="$(date +%s)";
+    if [[ -f "$stamp" ]]; then
+        last="$(cat "$stamp" 2>/dev/null || echo 0)";
+        [[ $((now - last)) -lt "$DEBOUNCE_SECS" ]] && return 1;
+    fi;
+    echo "$now" > "$stamp" 2>/dev/null || true;
+    return 0;
+};
+
+# @name diskmon
+# @type internal
+# @desc Show a desktop notification to the graphical user, if a session exists.
+function diskmon::notify-desktop() {
+    local severity="$1" title="$2" msg="$3";
+    [[ -n "$DESKTOP_USER" ]] || return 0;
+    local uid; uid="$(id -u "$DESKTOP_USER" 2>/dev/null || true)";
+    [[ -n "$uid" ]] || return 0;
+    [[ -S "/run/user/${uid}/bus" ]] || return 0;
+    local urgency="normal";
+    [[ "$severity" = "critical" ]] && urgency="critical";
+    runuser -u "$DESKTOP_USER" -- env \
+        DISPLAY="$DESKTOP_DISPLAY" \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${uid}/bus" \
+        notify-send -u "$urgency" -i drive-harddisk "$title" "$msg" 2>/dev/null || true;
+    return 0;
+};
+
+# @name diskmon
+# @type internal
+# @desc Push an alert to ntfy.sh for warning/critical/notice severities.
+function diskmon::notify-ntfy() {
+    local severity="$1" title="$2" msg="$3";
+    [[ -n "$NTFY_TOPIC" ]] || return 0;
+    local priority tags;
+    case "$severity" in
+        critical) priority="urgent"; tags="rotating_light";;
+        warning)  priority="high";   tags="warning";;
+        notice)   priority="low";    tags="floppy_disk";;
+        *)        return 0;;
+    esac;
+    curl -fsS --max-time 10 \
+        -H "Title: [${severity}] ${title}" \
+        -H "Priority: ${priority}" \
+        -H "Tags: ${tags}" \
+        -d "$msg" \
+        "${NTFY_SERVER}/${NTFY_TOPIC}" > /dev/null 2>&1 || true;
+    return 0;
+};
+
+# @name diskmon
+# @type internal
+# @desc Read new kernel-log lines since the cursor and alert on disk error patterns.
+function diskmon::scan-events() {
+    local cursor="${1?ERROR: missing cursor}";
+    local line sev;
+    while IFS= read -r line; do
+        printf '%s' "$line" | grep -qiE "$DISKMON_EVENT_PAT" || continue;
+        sev="warning";
+        printf '%s' "$line" | grep -qiE "$DISKMON_CRIT_PAT" && sev="critical";
+        diskmon:alert "$sev" "Kernel disk event" "$line";
+    done < <(journalctl -k --cursor-file="$cursor" -o cat 2>/dev/null);
+};
+
+# @name diskmon
+# @type internal
+# @desc Time a single 4K direct read; alert on stall (slow) or freeze (timeout).
+function diskmon::probe-stall() {
+    local start end elapsed;
+    start="$(date +%s.%N)";
+    if timeout "$STALL_TIMEOUT_SECS" dd if="$DEVICE" of=/dev/null bs=4096 count=1 iflag=direct status=none 2>/dev/null; then
+        end="$(date +%s.%N)";
+        elapsed="$(awk -v s="$start" -v e="$end" 'BEGIN{printf "%.3f", e-s}')";
+        echo "$(date +%s),${elapsed}" >> "$LATENCY_CSV";
+        awk -v el="$elapsed" -v th="$STALL_THRESHOLD_SECS" 'BEGIN{exit !(el>th)}' \
+            && diskmon:alert warning "Disk stall" "4K probe read took ${elapsed}s on ${DEVICE} (>${STALL_THRESHOLD_SECS}s)";
+    else
+        diskmon:alert critical "Disk FREEZE/timeout" "4K probe did NOT complete within ${STALL_TIMEOUT_SECS}s on ${DEVICE} — possible hang/link loss";
+    fi;
+    return 0;
+};
+
+# @name diskmon
+# @type internal
+# @desc Fire SMART threshold + previous-snapshot delta alerts.
+function diskmon::snapshot-alerts() {
+    local temp="$1" cw="$2" spare="$3" pct="$4" media="$5" errlog="$6";
+    [[ "$cw" != "0" ]] && diskmon:alert critical "NVMe critical warning" "critical_warning=${cw} on ${DEVICE}";
+    awk -v t="$temp" -v c="$TEMP_CRIT" 'BEGIN{exit !(t>=c)}' && diskmon:alert critical "NVMe hot" "temperature ${temp}C >= ${TEMP_CRIT}C";
+    awk -v t="$temp" -v w="$TEMP_WARN" -v c="$TEMP_CRIT" 'BEGIN{exit !(t>=w && t<c)}' && diskmon:alert warning "NVMe warm" "temperature ${temp}C >= ${TEMP_WARN}C";
+    awk -v s="$spare" 'BEGIN{exit !(s<10)}' && diskmon:alert critical "Spare low" "available_spare=${spare}% on ${DEVICE}";
+    awk -v p="$pct" 'BEGIN{exit !(p>=90)}' && diskmon:alert warning "Wear high" "percentage_used=${pct}% on ${DEVICE}";
+
+    local prev p_media p_errlog;
+    prev="$(grep -v '^ts,' "$METRICS_CSV" | tail -n2 | head -n1 || true)";
+    [[ -n "$prev" ]] || return 0;
+    p_media="$(printf '%s' "$prev" | cut -d, -f6)";
+    p_errlog="$(printf '%s' "$prev" | cut -d, -f7)";
+    awk -v a="$media" -v b="${p_media:-0}" 'BEGIN{exit !(a>b)}' && diskmon:alert critical "Media errors rose" "media_errors ${p_media} -> ${media} on ${DEVICE}";
+    awk -v a="$errlog" -v b="${p_errlog:-0}" 'BEGIN{exit !(a>b)}' && diskmon:alert warning "NVMe error-log grew" "num_err_log_entries ${p_errlog} -> ${errlog} on ${DEVICE}";
+    return 0;
+};
+
+# @name diskmon
+# @type internal
+# @desc Extract a jq field from JSON, defaulting to 0 when null/missing/erroring.
+function diskmon::jq-field() {
+    local json="${1?ERROR: missing json}"; shift || return;
+    local path="${1?ERROR: missing path}"; shift || return;
+    printf '%s' "$json" | jq -r "${path} // 0" 2>/dev/null || echo 0;
+};
+
+# ---------------------------------------------------------------------------
+# Dispatch
+# ---------------------------------------------------------------------------
+
+diskmon:main "$@";

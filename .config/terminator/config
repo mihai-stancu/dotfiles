@@ -1,0 +1,72 @@
+[global_config]
+  suppress_multiple_term_dialog = True
+  always_split_with_profile = True
+  case_sensitive = False
+[keybindings]
+[profiles]
+  [[default]]
+    background_color = "#300a24"
+    background_darkness = 0.9
+    background_type = transparent
+    cursor_color = "#ffffff"
+    font = Fira Mono 12
+    foreground_color = "#ffffff"
+    scrollback_infinite = True
+    custom_command = /usr/local/bin/nu
+    use_system_font = False
+    copy_on_selection = True
+[layouts]
+  [[default]]
+    [[[win__all]]]
+      type = Window
+      parent = ""
+      maximised = True
+      last_active_term = 2b4bb684-bdce-4096-8af0-eae803ac4f2c
+      last_active_window = True
+
+    [[[split__horizontal]]]
+      type = VPaned
+      parent = win__all
+      order = 0
+      position = 758
+      ratio = 0.75
+
+    [[[split__vertical]]]
+      type = HPaned
+      parent = split__horizontal
+      order = 0
+      position = 1440
+      ratio = 0.75
+
+    [[[term__main]]]
+      type = Terminal
+      parent = split__vertical
+      order = 0
+      profile = default
+      directory = /home/mihai-stancu/Projects/yar/uno
+      uuid = 2b4bb684-bdce-4096-8af0-eae803ac4f2c
+
+    [[[term__sidebar]]]
+      type = Terminal
+      parent = split__vertical
+      order = 1
+      profile = default
+      directory = /home/mihai-stancu/Projects/yar/uno
+      uuid = 150517e4-bcf0-4ccc-88a2-e09c02e9c482
+
+    [[[term__gutter]]]
+      type = Terminal
+      parent = split__horizontal
+      order = 2
+      profile = default
+      directory = /home/mihai-stancu/Projects/yar/uno
+      uuid = 61f749d4-6c8a-4044-ba0c-df7c6eb10898
+  [[simple]]
+    [[[window0]]]
+      type = Window
+      parent = ""
+    [[[terminal0]]]
+      type = Terminal
+      parent = window0
+      profile = default
+[plugins]

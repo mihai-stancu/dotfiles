@@ -1,0 +1,82 @@
+#!/usr/bin/php
+<?php
+
+class Xvert
+{
+    private const IDENTIFIERS = [
+        'empty' => '^$',
+		'url' => '[-\+\w]+://[-_\.\@\?\=\[\]:/\w]+',
+        'date' => '\d{4}-\d{2}-\d{2}',
+        'datetime'   => '\d{4}-\d{2}-\d{2}T?\d{2}:\d{2}:\d{2}(\.\d+)?,?',
+        'datetimetz' => '\d{4}-\d{2}-\d{2}T?\d{2}:\d{2}:\d{2}(\.\d+)?\s?([+-]\d{2}:\d{2}|\w++|\w++/\w++)?,?',
+        'time' => '\d{2}:\d{2}(:\d{2})?',
+        'timestamp' => '\d{10}',
+        'militimestamp' => '\d{13}',
+        'jwt' => '[0-9a-zA-Z-_]+\\.[0-9a-zA-Z-_]+\\.[0-9a-zA-Z-_]++',
+        'bin' => '(b)?[0-1]++',
+        'hex' => '(0x)?[0-9a-fA-F]++',
+        'base64' => '[0-9a-zA-Z+/=]++',
+        'form-enc' => '[\w\+=%\.\-\_]+',
+        'json' => '\{.*\}',
+    ];
+
+    private mixed $fh;
+
+    public function __construct()
+    {
+        $this->fh = fopen('php://stdin', 'r');
+    }
+
+    public static function run()
+    {
+        $self = new self();
+        while ($line = fgets($self->fh)) {
+            [$type, $value] = $self->identify($line);
+            $self->convert($type, $value);
+        }
+    }
+
+    private function identify(string $line): array
+    {
+        foreach (self::IDENTIFIERS as $type => $pattern) {
+            if (preg_match('@^(?<value>'.$pattern.')$@x', $line, $matches)) {
+                return [$type, $matches['value'] ?? ''];
+            }
+        }
+
+        return ['unknown', null];
+    }
+
+    private function convert($type, $value)
+    {
+        $converted = match($type) {
+            'date' => strtotime($value.' 00:00:00'),
+            'datetime' => strtotime($value),
+            'datetimetz' => strtotime($value),
+            'time' => strtotime('today '.$value),
+            'timestamp' => date('Y-m-d H:i:s', $value),
+            'militimestamp' => date('Y-m-d H:i:s', $value/1000),
+            'jwt' => implode("\n", array_map(fn($p) => json_encode(json_decode($p), JSON_PRETTY_PRINT), array_map('base64_decode', array_slice(explode('.', $value), 0, 2)))),
+            'base64' => base64_decode($value),
+            'hex' => hex2bin($value),
+            'bin' => base_convert($value, 2, 10),
+            'url' => $this->getURL($value),
+            'json' => json_encode(json_decode($value), JSON_PRETTY_PRINT),
+            default => $value,
+        };
+        if ($type !== 'empty') {
+            printf("\n%s\n%s\n", str_pad('('.$type.')', 80, '-', STR_PAD_BOTH), $converted);
+        }
+    }
+    
+    private function getURL($value) 
+    {
+		$data = parse_url($value);
+		parse_str(parse_url($value, PHP_URL_QUERY), $query);
+		$data['query'] = $query;
+
+		return json_encode($data, JSON_PRETTY_PRINT);
+	}
+}
+
+Xvert::run();

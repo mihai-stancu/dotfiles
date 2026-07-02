@@ -1,0 +1,301 @@
+#!/bin/bash
+# /usr/local/bin/blackbox — system flight recorder, single-binary interface.
+# Samples load/PSI/thermal/power to a durable CSV every few seconds, fsync per
+# tick, so a hard freeze (which leaves nothing in the kernel log) still leaves
+# forensic breadcrumbs on disk. A START/STOP marker scheme makes the recorder
+# self-prove whether the previous shutdown was clean or a crash.
+# Config: /etc/blackbox/blackbox.conf
+# Subcommands: record status last-crash help
+
+# ---------------------------------------------------------------------------
+# Globals — defaults here; the conf file overrides them; readonly after load.
+# ---------------------------------------------------------------------------
+BLACKBOX_CONF="${BLACKBOX_CONF:-/etc/blackbox/blackbox.conf}";
+BLACKBOX_LOG_TAG="blackbox";
+RECORDER_CSV="/var/log/blackbox/recorder.csv";
+SAMPLE_SECS=2;
+MAX_LINES=200000;
+TRIM_EVERY=1000;
+PKG_TEMP_TYPE="x86_pkg_temp";
+TCPU_TYPE="TCPU";
+NVME_HWMON_NAME="nvme";
+BAT_NAME="BAT0";
+AC_NAME="AC";
+
+# Runtime-resolved sensor paths (set by resolve-sensors; not from conf).
+BB_PKG_TEMP="";
+BB_TCPU="";
+BB_NVME_TEMP="";
+BB_CPUFREQ="";
+BB_BAT="";
+BB_AC="";
+
+readonly BLACKBOX_CSV_HEADER="ts,iso,event,load1,load5,load15,running,mem_avail_kb,psi_cpu_some10,psi_io_full10,psi_mem_full10,pkg_temp_mC,tcpu_mC,nvme_temp_mC,cpu0_freq_khz,ac_online,bat_status,bat_current_uA,bat_voltage_uV,bat_capacity";
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+# @name blackbox
+# @type command
+# @desc Unified entry point; loads config and routes to a subcommand.
+# @usage blackbox <subcommand> [args...]
+# @return 0 success, 1 failure
+function blackbox:main() {
+    [[ "${BASH_SOURCE[0]}" != "$0" ]] && return;
+
+    set -Eeuo pipefail;
+    shopt -s inherit_errexit;
+    trap 'trap - SIGTERM; kill -- -$$' SIGTERM;
+
+    blackbox::load-config;
+
+    local cmd="${1:-help}";
+    shift || true;
+    local -a args=("$@");
+
+    command -v "blackbox:${cmd}" > /dev/null 2>&1 || blackbox::unknown-cmd "$cmd";
+    "blackbox:${cmd}" "${args[@]}";
+};
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+
+# @name blackbox
+# @type internal
+# @desc Source the conf file, re-apply defaults for unset vars, then freeze them.
+function blackbox::load-config() {
+    # shellcheck source=/dev/null
+    [[ -f "$BLACKBOX_CONF" ]] && source "$BLACKBOX_CONF";
+
+    RECORDER_CSV="${RECORDER_CSV:-/var/log/blackbox/recorder.csv}";
+    SAMPLE_SECS="${SAMPLE_SECS:-2}";
+    MAX_LINES="${MAX_LINES:-200000}";
+    TRIM_EVERY="${TRIM_EVERY:-1000}";
+    PKG_TEMP_TYPE="${PKG_TEMP_TYPE:-x86_pkg_temp}";
+    TCPU_TYPE="${TCPU_TYPE:-TCPU}";
+    NVME_HWMON_NAME="${NVME_HWMON_NAME:-nvme}";
+    BAT_NAME="${BAT_NAME:-BAT0}";
+    AC_NAME="${AC_NAME:-AC}";
+
+    readonly RECORDER_CSV SAMPLE_SECS MAX_LINES TRIM_EVERY PKG_TEMP_TYPE \
+             TCPU_TYPE NVME_HWMON_NAME BAT_NAME AC_NAME BLACKBOX_LOG_TAG;
+};
+
+# ---------------------------------------------------------------------------
+# Help
+# ---------------------------------------------------------------------------
+
+# @name blackbox
+# @type subcommand
+# @desc Print usage and exit 0.
+# @usage blackbox help
+function blackbox:help() {
+    cat <<-USAGE
+	Usage: blackbox <subcommand> [args...]
+
+	Subcommands:
+	  record       Sample system state to CSV every ${SAMPLE_SECS}s, fsync per tick (long-running).
+	  status       Show recorder stats and the last 15 samples.
+	  last-crash   Show the pre-crash samples around the most recent boot boundary.
+	  help         Print this message.
+
+	Temps are recorded in milli-°C (divide by 1000). bat_current/voltage in µA/µV.
+	Config: ${BLACKBOX_CONF}
+	Log:    ${RECORDER_CSV}
+	USAGE
+};
+
+# ---------------------------------------------------------------------------
+# Subcommands
+# ---------------------------------------------------------------------------
+
+# @name blackbox
+# @type subcommand
+# @desc Long-running sampler: write START, then a durable sample every tick until killed.
+# @usage blackbox record
+function blackbox:record() {
+    blackbox::resolve-sensors;
+    mkdir -p "$(dirname "$RECORDER_CSV")";
+    [[ -f "$RECORDER_CSV" ]] || echo "$BLACKBOX_CSV_HEADER" > "$RECORDER_CSV";
+
+    trap 'blackbox::sample STOP; trap - SIGTERM SIGINT; exit 0' SIGTERM SIGINT;
+    blackbox::sample START;
+
+    local i=0;
+    while true; do
+        sleep "$SAMPLE_SECS";
+        blackbox::sample SAMPLE;
+        i=$(( i + 1 ));
+        (( i % TRIM_EVERY == 0 )) && blackbox::trim;
+    done;
+};
+
+# @name blackbox
+# @type subcommand
+# @desc Print recorder stats and the most recent samples.
+# @usage blackbox status
+function blackbox:status() {
+    [[ -f "$RECORDER_CSV" ]] || blackbox::die "no recorder log yet: ${RECORDER_CSV}";
+    local lines; lines="$(wc -l < "$RECORDER_CSV" 2>/dev/null || echo 0)";
+    echo "### blackbox recorder — ${RECORDER_CSV}";
+    echo "samples=$(( lines > 0 ? lines - 1 : 0 ))  cadence=${SAMPLE_SECS}s  cap=${MAX_LINES} lines";
+    echo;
+    echo "### last 15 samples (temps milli-°C; current µA; voltage µV)";
+    { head -n1 "$RECORDER_CSV"; tail -n 15 "$RECORDER_CSV"; } | column -t -s,;
+};
+
+# @name blackbox
+# @type subcommand
+# @desc Show the samples just before the latest boot, flagging whether it was a clean stop or a crash.
+# @usage blackbox last-crash
+function blackbox:last-crash() {
+    [[ -f "$RECORDER_CSV" ]] || blackbox::die "no recorder log yet: ${RECORDER_CSV}";
+    local startln; startln="$(awk -F, '$3=="START"{n=NR} END{print n+0}' "$RECORDER_CSV")";
+    [[ "$startln" -gt 0 ]] || { echo "No START marker yet (recorder just initialized)."; return 0; };
+
+    local prevev when;
+    prevev="$(awk -F, -v L=$(( startln - 1 )) 'NR==L{print $3}' "$RECORDER_CSV")";
+    when="$(awk -F, -v L="$startln" 'NR==L{print $2}' "$RECORDER_CSV")";
+    echo "### latest boot boundary at line ${startln} (${when})";
+    if [[ "$prevev" == "STOP" ]]; then
+        echo "Previous shutdown was CLEAN — STOP marker present. No crash recorded.";
+    elif [[ "$startln" -le 2 ]]; then
+        echo "Only one boot recorded so far; nothing before it.";
+    else
+        echo "⚠ NO STOP before this boot → previous shutdown was a HARD CRASH.";
+        echo "  Pre-crash samples (last 25 before the gap):";
+    fi;
+    echo;
+    local from=$(( startln - 26 )); (( from < 2 )) && from=2;
+    { head -n1 "$RECORDER_CSV"; awk -F, -v a="$from" -v b="$(( startln - 1 ))" 'NR>=a && NR<=b' "$RECORDER_CSV"; } | column -t -s,;
+};
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+# @name blackbox
+# @type internal
+# @desc Resolve thermal/hwmon/power sysfs paths by name so boot-to-boot renumbering can't break us.
+function blackbox::resolve-sensors() {
+    local p t n;
+    for p in /sys/class/thermal/thermal_zone*; do
+        [[ -r "${p}/type" ]] || continue;
+        read -r t < "${p}/type" || continue;
+        [[ "$t" == "$PKG_TEMP_TYPE" ]] && BB_PKG_TEMP="${p}/temp";
+        [[ "$t" == "$TCPU_TYPE" ]] && BB_TCPU="${p}/temp";
+    done;
+    for p in /sys/class/hwmon/hwmon*; do
+        [[ -r "${p}/name" ]] || continue;
+        read -r n < "${p}/name" || continue;
+        [[ "$n" == "$NVME_HWMON_NAME" ]] && { BB_NVME_TEMP="${p}/temp1_input"; break; };
+    done;
+    BB_CPUFREQ="/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq";
+    BB_BAT="/sys/class/power_supply/${BAT_NAME}";
+    BB_AC="/sys/class/power_supply/${AC_NAME}/online";
+};
+
+# @name blackbox
+# @type internal
+# @desc Read a single-value sysfs/proc file into REPLY (fork-free); default on missing/unreadable.
+function blackbox::readinto() {
+    local f="${1:-}";
+    REPLY="${2:-}";
+    [[ -n "$f" && -r "$f" ]] || return 0;
+    read -r REPLY < "$f" 2>/dev/null || REPLY="${2:-}";
+    return 0;
+};
+
+# @name blackbox
+# @type internal
+# @desc Gather one full sample (fork-free reads), append it, and fsync the file to NAND.
+# @usage blackbox::sample <START|STOP|SAMPLE>
+function blackbox::sample() {
+    local event="${1:-SAMPLE}";
+    local ts iso;
+    printf -v ts '%(%s)T' -1;
+    printf -v iso '%(%Y-%m-%dT%H:%M:%S)T' -1;
+
+    local load1="" load5="" load15="" procs="" running="";
+    if [[ -r /proc/loadavg ]]; then
+        read -r load1 load5 load15 procs _ < /proc/loadavg || true;
+        running="${procs%%/*}";
+    fi;
+
+    local memavail="" k v;
+    if [[ -r /proc/meminfo ]]; then
+        while read -r k v _; do
+            [[ "$k" == "MemAvailable:" ]] && { memavail="$v"; break; };
+        done < /proc/meminfo;
+    fi;
+
+    local cpu_some="" io_full="" mem_full="" _a _b;
+    if [[ -r /proc/pressure/cpu ]]; then read -r _a _b _ < /proc/pressure/cpu || true; cpu_some="${_b#avg10=}"; fi;
+    if [[ -r /proc/pressure/io ]]; then { read -r _; read -r _a _b _; } < /proc/pressure/io || true; io_full="${_b#avg10=}"; fi;
+    if [[ -r /proc/pressure/memory ]]; then { read -r _; read -r _a _b _; } < /proc/pressure/memory || true; mem_full="${_b#avg10=}"; fi;
+
+    local pkg tcpu nvt freq ac bstat bcur bvolt bcap;
+    blackbox::readinto "$BB_PKG_TEMP";          pkg="$REPLY";
+    blackbox::readinto "$BB_TCPU";              tcpu="$REPLY";
+    blackbox::readinto "$BB_NVME_TEMP";         nvt="$REPLY";
+    blackbox::readinto "$BB_CPUFREQ";           freq="$REPLY";
+    blackbox::readinto "$BB_AC";                ac="$REPLY";
+    blackbox::readinto "${BB_BAT}/status";      bstat="$REPLY";
+    blackbox::readinto "${BB_BAT}/current_now"; bcur="$REPLY";
+    blackbox::readinto "${BB_BAT}/voltage_now"; bvolt="$REPLY";
+    blackbox::readinto "${BB_BAT}/capacity";    bcap="$REPLY";
+
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+        "$ts" "$iso" "$event" "$load1" "$load5" "$load15" "$running" "$memavail" \
+        "$cpu_some" "$io_full" "$mem_full" "$pkg" "$tcpu" "$nvt" "$freq" \
+        "$ac" "$bstat" "$bcur" "$bvolt" "$bcap" >> "$RECORDER_CSV";
+
+    sync -d "$RECORDER_CSV" 2>/dev/null || true;
+};
+
+# @name blackbox
+# @type internal
+# @desc Cap the log: keep the header plus the most recent MAX_LINES data rows.
+function blackbox::trim() {
+    local n; n="$(wc -l < "$RECORDER_CSV" 2>/dev/null || echo 0)";
+    (( n > MAX_LINES )) || return 0;
+    { head -n1 "$RECORDER_CSV"; grep -av '^ts,iso,' "$RECORDER_CSV" | tail -n "$MAX_LINES"; } \
+        > "${RECORDER_CSV}.tmp" 2>/dev/null && mv -f "${RECORDER_CSV}.tmp" "$RECORDER_CSV";
+    sync -d "$RECORDER_CSV" 2>/dev/null || true;
+    return 0;
+};
+
+# @name blackbox
+# @type internal
+# @desc Print error to stderr and journald, then exit 1.
+function blackbox::die() {
+    local msg="${1?ERROR: missing message}";
+    blackbox::err "$msg";
+    exit 1;
+};
+
+# @name blackbox
+# @type internal
+# @desc Print error to stderr and journald (non-fatal; safe inside loops).
+function blackbox::err() {
+    local msg="${1?ERROR: missing message}";
+    logger -s -t "$BLACKBOX_LOG_TAG" -p "daemon.err" -- "$msg" 2>&1 || true;
+};
+
+# @name blackbox
+# @type internal
+# @desc Print unknown-subcommand error, show help on stderr, exit 1.
+function blackbox::unknown-cmd() {
+    local cmd="${1:-unknown}";
+    blackbox::err "[main] unknown subcommand: '${cmd}'";
+    blackbox:help >&2;
+    exit 1;
+};
+
+# ---------------------------------------------------------------------------
+# Dispatch
+# ---------------------------------------------------------------------------
+
+blackbox:main "$@";

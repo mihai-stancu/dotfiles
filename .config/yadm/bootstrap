@@ -1,0 +1,54 @@
+#!/bin/bash
+
+set -e
+cd "$HOME"
+
+# repo dotfiles win over the stock Ubuntu ones (.bashrc/.profile/.bash_logout)
+yadm checkout -f -- .
+
+# geany rewrites [files]/recent_files — ignore local churn so it never re-commits
+yadm update-index --skip-worktree .config/geany/geany.conf 2>/dev/null || true
+
+# ssh perms sane for sshd (light machines get only authorized_keys, no decrypt)
+[ -d "$HOME/.ssh" ] && chmod 700 "$HOME/.ssh"
+[ -f "$HOME/.ssh/authorized_keys" ] && chmod 600 "$HOME/.ssh/authorized_keys"
+
+# fetch steward (per README)
+if ! command -v steward >/dev/null 2>&1; then
+	sudo curl -fsSL \
+		https://github.com/curatorium/steward/releases/latest/download/steward \
+		-o /usr/local/bin/steward
+	sudo chmod +x /usr/local/bin/steward
+fi
+
+# install packages/tools (optional) — Stewardfile self-gates desktop vs server by gnome-shell presence
+printf 'Run steward (install packages/tools)? [y/N] '
+read ans
+[[ "$ans" == [yY] ]] && steward
+
+# keyless auto-pull every 15m (fetch stays over HTTPS)
+cron='*/15 * * * * yadm pull --rebase --autostash >/dev/null 2>&1'
+( crontab -l 2>/dev/null | grep -vF 'yadm pull --rebase' || true; echo "$cron" ) | crontab -
+
+# desktop display prefs (no-op on headless machines)
+if command -v gsettings >/dev/null 2>&1 && [ -e "/run/user/$(id -u)/bus" ]; then
+	export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u)/bus"
+	gsettings set org.gnome.settings-daemon.plugins.power ambient-enabled false || true
+	gsettings set org.gnome.settings-daemon.plugins.power idle-dim false || true
+	gsettings set org.gnome.desktop.screensaver idle-activation-enabled false || true
+	gsettings set org.gnome.desktop.screensaver lock-enabled false || true
+	xset s off || true; xset -dpms || true; xset s noblank || true
+fi
+
+# optional secrets — LAST step, non-fatal so a wrong/declined passphrase can't abort
+if [ -f "$HOME/.local/share/yadm/archive" ]; then
+	printf 'Decrypt ssh/gnupg keys? [y/N] '
+	read ans
+	case "$ans" in
+	y|Y)
+		yadm remote set-url --push origin git@github.com:mihai-stancu/dotfiles.git
+		yadm decrypt || true
+		chmod -R go-rwx "$HOME/.ssh" "$HOME/.gnupg" 2>/dev/null || true
+		;;
+	esac
+fi
