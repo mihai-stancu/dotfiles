@@ -6,6 +6,9 @@
 # @desc line-leading keywords in bold; every other line passes through. Output is Markdown, or ANSI with --ansi.
 # @usage feature-view [--ansi] [<file.feature.md>|<epic-dir>...]
 # @usage feature-view [--ansi] < file.feature.md
+# @usage feature-view -h|--help
+# @desc Idempotent: input that already holds feature-view Markdown output renders the same as its source.
+# @flag [-h|--help] -- Print the usage and exit.
 # @flag [--ansi] -- Terminal output: bold keywords, dim labels, a dim rule line, titles in one accent colour.
 # @arg [...] -- feature files or directories; a directory expands to its *.feature.md, index.feature.md first.
 # @return 0 -- rendered.
@@ -14,11 +17,37 @@ function feature-view:main() {
 	[[ "${BASH_SOURCE[0]}" != "$0" ]] && return;
 	set -Eeuo pipefail;
 
-	local ansi=0; [[ "${1:-}" == "--ansi" ]] && { ansi=1; shift; };
+	local ansi=0;
+	while (( $# )); do
+		case "$1" in
+			-h|--help) feature-view::help; return 0;;
+			--ansi) ansi=1; shift;;
+			--) shift; break;;
+			*) break;;
+		esac;
+	done;
 	local -a files=();
 	feature-view::expand files "$@" || return 1;
 
 	feature-view::render "$ansi" "${files[@]}";
+}
+
+# @name feature-view::help
+# @type internal
+# @desc Print the usage.
+function feature-view::help() {
+	cat <<-'HELP'
+	Usage: feature-view [--ansi] [<file.feature.md>|<epic-dir>...]
+	       feature-view [--ansi] < file.feature.md
+	       feature-view -h|--help
+
+	Easy-reader for feature files: a rule between elements, a STORY / SCENARIO / EARS label on each,
+	line-leading keywords in bold. A directory expands to its *.feature.md, index.feature.md first.
+	Input that is already feature-view Markdown output renders unchanged.
+
+	  --ansi      Terminal output: bold keywords, dim labels and rules, accent-coloured titles.
+	  -h, --help  Print this help.
+	HELP
 }
 
 # @name feature-view::expand
@@ -65,9 +94,25 @@ function feature-view::program() {
 		}
 	}
 
+	# A rule is deferred until the next content line, so two rules never meet and none trails the output.
 	function blank() { if (printed && !last_blank) { print ""; last_blank = 1; } }
-	function emit(s) { print s; last_blank = 0; printed = 1; }
-	function hr() { blank(); emit(ansi ? rule : "---"); blank(); body = 0; }
+	function emit(s) {
+		if (want_rule) { want_rule = 0; blank(); print (ansi ? rule : "---"); last_blank = 0; blank(); }
+		print s; last_blank = 0; printed = 1;
+	}
+	function hr() { if (printed) want_rule = 1; body = 0; }
+
+	# Strip a label the input already carries (code span or plain word), so a re-render adds it once.
+	function unlabel(s, label) {
+		if (index(s, "`" label "` ") == 1) return substr(s, length(label) + 4);
+		if (index(s, label " ") == 1) return substr(s, length(label) + 2);
+		return s;
+	}
+
+	function start_file(name) {
+		chapter = ""; in_elem = 0; keywords = 0; fence = 0; body = 0; pending = "";
+		persona = (name ~ /(^|\/)personas\.md$/);
+	}
 
 	# Bold a line-leading keyword that the source left plain; one already in ** stays as it is.
 	function bold_keyword(s,   i, k, c) {
@@ -87,8 +132,12 @@ function feature-view::program() {
 		return out s;
 	}
 
-	function element(label, title) {
+	function element(label, title,   h) {
 		if (body) hr();
+		if (label != "") {
+			h = match(title, /^#+ /) ? substr(title, 1, RLENGTH) : "";
+			title = h unlabel(substr(title, length(h) + 1), label);
+		}
 		if (ansi) { blank(); emit((label != "" ? D label R "  " : "") B A title R); }
 		else { blank(); emit(label != "" && match(title, /^#+ /) ? substr(title, 1, RLENGTH) "`" label "` " substr(title, RLENGTH + 1) : title); }
 		blank(); in_elem = 1; keywords = (label != "PERSONA"); body = 0; pending = "";
@@ -96,9 +145,16 @@ function feature-view::program() {
 
 	FNR == 1 {
 		if (NR > 1) hr();
-		chapter = ""; in_elem = 0; keywords = 0; fence = 0; body = 0; pending = "";
-		persona = (FILENAME ~ /(^|\/)personas\.md$/);
+		start_file(FILENAME);
 		if (multi) { emit(ansi ? D FILENAME R : "`" FILENAME "`"); blank(); }
+	}
+
+	# The file-name header of multi-file Markdown output: a file boundary on re-render.
+	!fence && /^`[^`]*(\.feature\.md|personas\.md)`[[:space:]]*$/ {
+		name = $0; sub(/^`/, "", name); sub(/`[[:space:]]*$/, "", name);
+		hr(); start_file(name);
+		emit(ansi ? D name R : "`" name "`"); blank();
+		next;
 	}
 
 	fence || /^```/ {
@@ -107,6 +163,9 @@ function feature-view::program() {
 	}
 
 	/^-{8,}[[:space:]]*$/ { next; }
+
+	# A rule from earlier feature-view output (Markdown or ANSI) folds into the deferred rule.
+	/^-{3,7}[[:space:]]*$/ || /^(\033\[2m)?(─)+(\033\[0m)?$/ { hr(); next; }
 
 	/^# / { blank(); emit(ansi ? B A substr($0, 3) R : $0); blank(); next; }
 
@@ -133,6 +192,7 @@ function feature-view::program() {
 
 	{
 		line = $0;
+		if (pending != "") line = unlabel(line, pending);
 		if (keywords) line = bold_keyword(line);
 		if (ansi) {
 			if (in_elem && line ~ /^\*\*(And|But)\*\*/) line = "  " line;
