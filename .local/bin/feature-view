@@ -1,0 +1,147 @@
+#!/bin/bash
+
+# @name feature-view
+# @type command
+# @desc Easy-reader for feature files: a rule between elements, a plain STORY / SCENARIO / EARS label on each,
+# @desc line-leading keywords in bold; every other line passes through. Output is Markdown, or ANSI with --ansi.
+# @usage feature-view [--ansi] [<file.feature.md>|<epic-dir>...]
+# @usage feature-view [--ansi] < file.feature.md
+# @flag [--ansi] -- Terminal output: bold keywords, dim labels, a dim rule line, titles in one accent colour.
+# @arg [...] -- feature files or directories; a directory expands to its *.feature.md, index.feature.md first.
+# @return 0 -- rendered.
+# @return 1 -- a path does not exist.
+function feature-view:main() {
+	[[ "${BASH_SOURCE[0]}" != "$0" ]] && return;
+	set -Eeuo pipefail;
+
+	local ansi=0; [[ "${1:-}" == "--ansi" ]] && { ansi=1; shift; };
+	local -a files=();
+	feature-view::expand files "$@" || return 1;
+
+	feature-view::render "$ansi" "${files[@]}";
+}
+
+# @name feature-view::expand
+# @type internal
+# @desc Collect the input files; a directory yields its *.feature.md files, index.feature.md first in each dir.
+# @arg <out> -- name of the array that receives the paths.
+# @arg [...] -- files or directories.
+# @return 1 -- a path does not exist.
+function feature-view::expand() {
+	local -n __files_="$1"; shift;
+	local path;
+	for path in "$@"; do
+		[[ -e "$path" ]] || { echo "ERROR: no such file or directory: $path" >&2; return 1; };
+		[[ -f "$path" ]] && { __files_+=("$path"); continue; };
+		mapfile -t -O "${#__files_[@]}" __files_ < <(
+			find "$path" -name '*.feature.md' -type f \
+				| awk '{ key = $0; sub(/\/index\.feature\.md$/, "/\001", key); print key "\t" $0; }' \
+				| LC_ALL=C sort | cut -f2
+		);
+	done;
+}
+
+# @name feature-view::render
+# @type internal
+# @desc Render the files (stdin when none) as Markdown or ANSI.
+# @arg <ansi> -- 1 for ANSI output, 0 for Markdown.
+# @arg [...] -- the files.
+function feature-view::render() {
+	local ansi="$1"; shift;
+	awk -v ansi="$ansi" -v multi="$(( $# > 1 ))" "$(feature-view::program)" "$@";
+}
+
+# @name feature-view::program
+# @type internal
+# @desc Print the awk program. Keywords come from references/style/feature-md.yaml (feature-md-07, -16, -17).
+function feature-view::program() {
+	cat <<-'AWK'
+	BEGIN {
+		n = split("Scenario Outline|Response measure|In order to|Environment|I need to|Background|Stimulus|" \
+			"Examples|Scenario|Response|Artifact|Source|Given|While|Where|When|Then|As a|And|But|The|If", kw, "|");
+		if (ansi) {
+			B = "\033[1m"; D = "\033[2m"; A = "\033[36m"; R = "\033[0m";
+			rule = D; for (i = 0; i < 80; i++) rule = rule "─"; rule = rule R;
+		}
+	}
+
+	function blank() { if (printed && !last_blank) { print ""; last_blank = 1; } }
+	function emit(s) { print s; last_blank = 0; printed = 1; }
+	function hr() { blank(); emit(ansi ? rule : "---"); blank(); body = 0; }
+
+	# Bold a line-leading keyword that the source left plain; one already in ** stays as it is.
+	function bold_keyword(s,   i, k, c) {
+		for (i = 1; i <= n; i++) {
+			k = kw[i]; c = substr(s, length(k) + 1, 1);
+			if (index(s, k) == 1 && (c == "" || c == " " || c == ":")) return "**" k "**" substr(s, length(k) + 1);
+		}
+		return s;
+	}
+
+	function ansi_inline(s,   out) {
+		out = "";
+		while (match(s, /\*\*[^*]+\*\*/)) {
+			out = out substr(s, 1, RSTART - 1) B substr(s, RSTART + 2, RLENGTH - 4) R;
+			s = substr(s, RSTART + RLENGTH);
+		}
+		return out s;
+	}
+
+	function element(label, title) {
+		if (body) hr();
+		if (ansi) { blank(); emit((label != "" ? D label R "  " : "") B A title R); }
+		else { blank(); emit(label != "" && match(title, /^#+ /) ? substr(title, 1, RLENGTH) "`" label "` " substr(title, RLENGTH + 1) : title); }
+		blank(); in_elem = 1; keywords = (label != "PERSONA"); body = 0; pending = "";
+	}
+
+	FNR == 1 {
+		if (NR > 1) hr();
+		chapter = ""; in_elem = 0; keywords = 0; fence = 0; body = 0; pending = "";
+		persona = (FILENAME ~ /(^|\/)personas\.md$/);
+		if (multi) { emit(ansi ? D FILENAME R : "`" FILENAME "`"); blank(); }
+	}
+
+	fence || /^```/ {
+		if (/^```/) fence = !fence;
+		emit($0); body = 1; next;
+	}
+
+	/^-{8,}[[:space:]]*$/ { next; }
+
+	/^# / { blank(); emit(ansi ? B A substr($0, 3) R : $0); blank(); next; }
+
+	/^## / {
+		name = substr($0, 4);
+		if (persona) { element("PERSONA", ansi ? name : $0); next; }
+		chapter = tolower(name); in_elem = 0; keywords = 0; pending = "";
+		if (body) hr();
+		if (chapter == "story") { in_elem = 1; keywords = 1; pending = "STORY"; if (ansi) next; }
+		blank(); emit(ansi ? B toupper(name) R : $0); blank();
+		next;
+	}
+
+	/^### / {
+		title = substr($0, 5);
+		label = "";
+		if (chapter == "acceptance criteria") label = (tolower(title) == "background") ? "BACKGROUND" : "SCENARIO";
+		if (chapter == "constraints") label = "EARS";
+		element(label, ansi ? title : $0);
+		next;
+	}
+
+	/^[[:space:]]*$/ { if (!(ansi && in_elem)) blank(); next; }
+
+	{
+		line = $0;
+		if (keywords) line = bold_keyword(line);
+		if (ansi) {
+			if (in_elem && line ~ /^\*\*(And|But)\*\*/) line = "  " line;
+			line = ansi_inline(line);
+		}
+		if (pending != "") { line = (ansi ? D pending R "  " : "`" pending "` ") line; pending = ""; }
+		emit(line); body = 1;
+	}
+	AWK
+}
+
+feature-view:main "$@";
