@@ -2,12 +2,14 @@
 
 # @name feature-view
 # @type command
-# @desc Easy-reader for feature files: a rule between elements, a plain STORY / SCENARIO / EARS label on each,
+# @desc Easy-reader for feature files: a rule between elements, a plain STORY / SCENARIO / SPEC label on each,
 # @desc line-leading keywords in bold; every other line passes through. Output is Markdown, or ANSI with --ansi.
 # @usage feature-view [--ansi] [<file.feature.md>|<epic-dir>...]
 # @usage feature-view [--ansi] < file.feature.md
 # @usage feature-view -h|--help
 # @desc Idempotent: input that already holds feature-view Markdown output renders the same as its source.
+# @desc SCENARIO labels Scenarios (legacy: Acceptance criteria); SPEC labels Specifications (legacy: Specs,
+# @desc Constraints); an older EARS label becomes SPEC. A chapter subtitle (_Acceptance criteria._) passes through.
 # @flag [-h|--help] -- Print the usage and exit.
 # @flag [--ansi] -- Terminal output: bold keywords, dim labels, a dim rule line, titles in one accent colour.
 # @arg [...] -- feature files or directories; a directory expands to its *.feature.md, index.feature.md first.
@@ -41,9 +43,11 @@ function feature-view::help() {
 	       feature-view [--ansi] < file.feature.md
 	       feature-view -h|--help
 
-	Easy-reader for feature files: a rule between elements, a STORY / SCENARIO / EARS label on each,
+	Easy-reader for feature files: a rule between elements, a STORY / SCENARIO / SPEC label on each,
 	line-leading keywords in bold. A directory expands to its *.feature.md, index.feature.md first.
 	Input that is already feature-view Markdown output renders unchanged.
+	SCENARIO labels Scenarios (legacy: Acceptance criteria); SPEC labels Specifications (legacy: Specs,
+	Constraints); an older EARS label becomes SPEC. A chapter subtitle (_Acceptance criteria._) passes through.
 
 	  --ansi      Terminal output: bold keywords, dim labels and rules, accent-coloured titles.
 	  -h, --help  Print this help.
@@ -137,6 +141,7 @@ function feature-view::program() {
 		if (label != "") {
 			h = match(title, /^#+ /) ? substr(title, 1, RLENGTH) : "";
 			title = h unlabel(substr(title, length(h) + 1), label);
+			if (label == "SPEC") title = h unlabel(substr(title, length(h) + 1), "EARS");
 		}
 		if (ansi) { blank(); emit((label != "" ? D label R "  " : "") B A title R); }
 		else { blank(); emit(label != "" && match(title, /^#+ /) ? substr(title, 1, RLENGTH) "`" label "` " substr(title, RLENGTH + 1) : title); }
@@ -182,8 +187,8 @@ function feature-view::program() {
 	/^### / {
 		title = substr($0, 5);
 		label = "";
-		if (chapter == "acceptance criteria") label = (tolower(title) == "background") ? "BACKGROUND" : "SCENARIO";
-		if (chapter == "constraints") label = "EARS";
+		if (chapter == "scenarios" || chapter == "acceptance criteria") label = (tolower(title) == "background") ? "BACKGROUND" : "SCENARIO";
+		if (chapter == "specifications" || chapter == "specs" || chapter == "constraints") label = "SPEC";
 		element(label, ansi ? title : $0);
 		next;
 	}

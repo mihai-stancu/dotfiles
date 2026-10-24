@@ -12,49 +12,6 @@ new-stuff-for-review() {
 	apt printer-driver-fujixerox
 }
 
-android-studio() {
-	guard-desktop
-	ANDROIDVS="${ANDROIDVS:-2025.1.3.7}"
-
-	guard android-studio
-
-	deb https://download.oracle.com/java/21/latest/jdk-21_linux-x64_bin.deb
-	apt aapt
-	apt adb
-	apt bridge-utils
-	apt lib32z1
-	#apt libbz2-1.0:i386
-	#apt libc6:i386
-	apt libguestfs-tools
-	#apt libncurses5:i386
-	#apt libstdc++6:i386
-	apt libvirt-clients
-	apt libvirt-daemon-system
-	apt openjdk-21-jdk
-	apt qemu-kvm
-	apt virtinst
-	apt virt-manager
-	apt virt-top
-	tar --keep android-studio android-studio/bin/studio.sh https://redirector.gvt1.com/edgedl/android/studio/ide-zips/$ANDROIDVS/android-studio-$ANDROIDVS-linux.tar.gz
-	defer <<-SH
-		cat <<-EOF > /usr/share/applications/android-studio.desktop
-			[Desktop Entry]
-			Name=Android Studio
-			Name[en_GB]=android-studio.desktop
-			Categories=Development;IDE;
-			Icon=/opt/android-studio/android-studio/bin/studio.png
-
-			Type=Application
-			Version=1.0
-
-			Exec=bash -i "/opt/android-studio/android-studio/bin/studio.sh" %f
-			Terminal=false
-			StartupNotify=true
-			StartupWMClass=jetbrains-android-studio
-		EOF
-	SH
-}
-
 antlr4() {
 	guard-desktop
 	guard antlr4
@@ -75,9 +32,9 @@ aws-cli() {
 az-cli() {
 	guard az
 
-	key azure-cli https://packages.microsoft.com/keys/microsoft.asc
-	src azure-cli https://packages.microsoft.com/repos/azure-cli/ $VERSION_CODENAME main
-	apt azure-cli
+	# packages.microsoft.com has no resolute dist (2026-07) -- pipx system-wide instead
+	apt pipx
+	defer <<<"PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin pipx install azure-cli"
 }
 
 bash-import() {
@@ -102,29 +59,6 @@ cargo() {
 	apt cargo
 }
 
-chromium() {
-	guard-desktop
-	guard chromium
-
-	key chromium "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x869689FE09306074"
-	src chromium https://freeshell.de/phd/chromium/$VERSION_CODENAME /
-	apt chromium
-	defer <<-SH
-		cat <<-EOF > /usr/share/applications/Chromium.desktop
-			#!/user/bin/env xdg-open
-			[Desktop Entry]
-			Name=Chromium
-			Keywords=Chrome;
-
-			Type=Application
-			Version=1.0
-
-			Exec="/usr/bin/chromium"
-			Terminal=false
-		EOF
-	SH
-}
-
 ci-tools() {
 	guard yq
 
@@ -139,7 +73,7 @@ ci-tools() {
 	apt jq
 	apt patch
 	apt python3-html2text # HTML to Markdown
-	composer curatorium/easy-config@dev-main
+	#composer curatorium/easy-config@dev-main
 	deb https://github.com/shopify/ejson/releases/download/v1.5.2/ejson_1.5.2_linux_$ARCH.deb # @see https://github.com/shopify/ejson
 	bin eyaml https://raw.githubusercontent.com/curatorium/eyaml/refs/heads/main/eyaml # @see https://github.com/curatorium/eyaml
 	deb https://github.com/skeema/skeema/releases/latest/download/skeema_$ARCH.deb # Declarative SQL migrations @see https://skeema.io/
@@ -153,18 +87,30 @@ ci-tools() {
 claude-code() {
 	guard claude
 
-	ext https://claude.ai/install.sh
+	apt golang
+
+	# claude and gopls are user-scoped (~/.local/bin, ~/go/bin): under `sudo steward`
+	# run them as the invoking user or they end up root-trapped in /root
+	defer <<-SH
+		u="\${SUDO_USER:-\$USER}"
+		as_user() { if [ "\$u" != root ] && command -v sudo >/dev/null; then sudo -u "\$u" -H "\$@"; else "\$@"; fi; }
+		as_user bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
+		as_user go install golang.org/x/tools/gopls@latest
+	SH
 
 	# LSP servers for cclsp (code intelligence in Claude Code)
 	npm intelephense		# PHP
 	npm pyright			 # Python
 	npm bash-language-server # Bash
-	go golang.org/x/tools/gopls@latest # Go
 
 	guard-desktop
-	defer <<<"cargo install agent-browser"
-	defer <<<"ln -sf ~/.cargo/bin/agent-browser /usr/local/bin/agent-browser"
-	defer <<<"agent-browser install"
+	defer <<-SH
+		u="\${SUDO_USER:-\$USER}"
+		as_user() { if [ "\$u" != root ] && command -v sudo >/dev/null; then sudo -u "\$u" -H "\$@"; else "\$@"; fi; }
+		as_user cargo install agent-browser
+		ln -sf "\$(getent passwd "\$u" | cut -d: -f6)/.cargo/bin/agent-browser" /usr/local/bin/agent-browser
+		as_user agent-browser install
+	SH
 }
 
 composer-install() {
@@ -263,7 +209,7 @@ docker() {
 	defer <<<"usermod -aG docker $USER"
 
 	guard-desktop
-	apt qemu-user-static
+	#apt qemu-user-static
 	apt binfmt-support
 	defer <<<"docker run --privileged --rm tonistiigi/binfmt --install all"
 	defer <<<"sudo -u $USER docker buildx create --name multiarch --driver docker-container --platform linux/amd64,linux/arm64 --use"
@@ -274,16 +220,7 @@ dropbox() {
 	guard-desktop
 	guard dropbox
 
-	deb "https://www.dropbox.com/download?dl=packages/ubuntu/dropbox_2020.03.04_amd64.deb"
-}
-
-element() {
-	guard-desktop
-	guard element-desktop
-
-	key element https://packages.element.io/debian/element-io-archive-keyring.gpg
-	src element https://packages.element.io/debian/ default main
-	apt element-desktop
+	deb https://linux.dropbox.com/packages/ubuntu/dropbox_2026.05.06_amd64.deb
 }
 
 firacode() {
@@ -298,7 +235,7 @@ flameshot() {
 	apt flameshot
 	apt libglib2.0-bin
 	defer <<-SH
-		GS="sudo -u $USER DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/\$(id -u $USER)/bus gsettings"
+		GS="sudo -u ${SUDO_USER:-$USER} DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/\$(id -u ${SUDO_USER:-$USER})/bus gsettings"
 
 		# Disable GNOME's built-in screenshot UI on PrintScreen
 		\$GS set org.gnome.shell.keybindings show-screenshot-ui '[]'
@@ -325,15 +262,6 @@ fprintd() {
 
 	apt libpam-fprintd
 	apt fprintd
-	apt libfprint-2-tod1
-
-	# Broadcom ControlVault3 Plus (0a5c:5864-5867) fingerprint driver
-	tar --keep fprint-broadcom brcm_linux_fp/install.sh https://packages.broadcom.com/artifactory/dell-controlvault-drivers/brcm_linux_fp_$FPRINTBRCMVS.tgz
-	defer <<<"mkdir -p /var/lib/fprint/.broadcomCv3plusFW"
-	defer <<<"cd /opt/fprint-broadcom/brcm_linux_fp && sh install.sh"
-	defer <<<"rm -rf /opt/fprint-broadcom /usr/local/bin/fprint-broadcom"
-	defer <<<"udevadm control --reload-rules && udevadm trigger"
-	defer <<<"systemctl restart fprintd"
 }
 
 geany() {
@@ -362,10 +290,13 @@ howdy() {
 	guard-desktop
 	guard howdy
 
+	# PPA publishes up to noble (2026-07); newer releases use the noble build
+	case "$VERSION_CODENAME" in focal|jammy|noble) HOWDY_DIST="$VERSION_CODENAME";; *) HOWDY_DIST="noble";; esac
 	key howdy "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x8CEBC97F3E9E1D58"
-	src howdy http://ppa.launchpad.net/boltgolt/howdy/ubuntu $VERSION_CODENAME main
+	src howdy http://ppa.launchpad.net/boltgolt/howdy/ubuntu $HOWDY_DIST main
 	apt howdy
-	pip numpy==1.26.4
+	# numpy<2 pin only works up to python3.12 (noble); resolute ships numpy 2.x anyway
+	case "$VERSION_CODENAME" in focal|jammy|noble) pip numpy==1.26.4;; esac
 	defer <<<"sed -iE 's:device_path = [^\n]+:device_path = /dev/video0:' /lib/security/howdy/config.ini"
 }
 
@@ -378,29 +309,41 @@ jetbrains-toolbox() {
 	tar --keep jetbrains-toolbox jetbrains-toolbox-$JETBRAINSVS/bin/jetbrains-toolbox https://download-cdn.jetbrains.com/toolbox/jetbrains-toolbox-$JETBRAINSVS.tar.gz
 }
 
+keybindings() {
+	guard-desktop
+	guard --file /tmp/.steward-keybindings
+
+	defer <<-SH
+		GS="sudo -u ${SUDO_USER:-$USER} DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/\$(id -u ${SUDO_USER:-$USER})/bus gsettings"
+
+		# Switch to workspace (Super+N)
+		for i in \$(seq 1 9); do
+			\$GS set org.gnome.desktop.wm.keybindings switch-to-workspace-\$i "['<Super>\$i']"
+		done
+
+		# Move window to workspace (Super+Shift+N)
+		declare -A symbols=([1]=exclam [2]=at [3]=numbersign [4]=dollar [5]=percent [6]=asciicircum [7]=ampersand [8]=asterisk [9]=parenleft)
+		for i in \$(seq 1 9); do
+			\$GS set org.gnome.desktop.wm.keybindings move-to-workspace-\$i "['<Shift><Super>\${symbols[\$i]}']"
+		done
+
+		touch /tmp/.steward-keybindings
+	SH
+}
+
 kubectl() {
 	#KUBECTLVS="$(curl -1fsSLR https://dl.k8s.io/release/stable.txt)"
 	KUBECTLVS="${KUBECTLVS:-v1.33.4}"
 	KUBECTLVS="${KUBECTLVS%.*}"
+	KUBELOGINVS="${KUBELOGINVS:-v0.2.17}"
 
 	guard kubectl
 
 	key kubernetes https://pkgs.k8s.io/core:/stable:/$KUBECTLVS/deb/Release.key
 	src kubernetes https://pkgs.k8s.io/core:/stable:/$KUBECTLVS/deb/ /
 	apt kubectl
-}
-
-newrelic() {
-	guard-desktop
-	PHPVS="${PHPVS:-8.2}"
-
-	guard --file /etc/php/$PHPVS/mods-available/newrelic.ini
-
-	# APM Agent @see https://docs.newrelic.com/docs/apm/agents/php-agent/installation/php-agent-installation-ubuntu-debian/
-	key newrelic https://download.newrelic.com/NEWRELIC_APT_2DAD550E.public
-	src newrelic http://apt.newrelic.com/debian/ newrelic non-free
-	on-amd64 apt newrelic-php5
-	defer <<<"phpdismod newrelic"
+	# Azure AD exec plugin referenced by the kubeconfigs
+	zip kubelogin bin/linux_amd64/kubelogin https://github.com/Azure/kubelogin/releases/download/$KUBELOGINVS/kubelogin-linux-amd64.zip
 }
 
 newrelic-cli() {
@@ -408,12 +351,6 @@ newrelic-cli() {
 	guard newrelic
 
 	deb https://github.com/newrelic/newrelic-cli/releases/download/v0.106.9/newrelic-cli_0.106.9_Linux_$(uname -m).deb
-}
-
-wrangler() {
-	guard wrangler
-
-	npm wrangler # Cloudflare CLI (Workers, Pages, R2, D1, KV) @see https://developers.cloudflare.com/workers/wrangler/
 }
 
 nodejs() {
@@ -438,15 +375,6 @@ nordvpn() {
 
 	guard-desktop
 	apt nordvpn-gui
-}
-
-nushell() {
-	guard nu
-
-	# @see https://nushell.sh
-	key nushell https://apt.fury.io/nushell/gpg.key
-	src nushell https://apt.fury.io/nushell/ /
-	apt nushell
 }
 
 nvidia() {
@@ -500,8 +428,18 @@ php() {
 	guard php
 
 	# Ondrej Sury @see https://deb.sury.org/
-	key php "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xB8DC7E53946656EFBCE4C1DD71DAEAAB4AD4CAB6"
-	src php https://ppa.launchpadcontent.net/ondrej/php/ubuntu $VERSION_CODENAME main
+	# 26.04+ lives on the unified packages.sury.org repo; launchpad PPA is legacy
+	# (jammy/noble still on launchpad until sury migrates them)
+	case "$VERSION_CODENAME" in
+	jammy|noble)
+		key php "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xB8DC7E53946656EFBCE4C1DD71DAEAAB4AD4CAB6"
+		src php https://ppa.launchpadcontent.net/ondrej/php/ubuntu $VERSION_CODENAME main
+		;;
+	*)
+		key php https://packages.sury.org/php/apt.gpg
+		src php https://packages.sury.org/php/ $VERSION_CODENAME main
+		;;
+	esac
 	apt php$PHPVS-amqp
 	apt php$PHPVS-apcu
 	apt php$PHPVS-bcmath
@@ -593,17 +531,18 @@ snyk() {
 starship() {
 	guard starship
 
-	ext https://starship.rs/install.sh sh -v latest
+	ext https://starship.rs/install.sh sh -s -- -y -v latest
 }
 
 steam() {
 	guard-desktop
 	guard steam
 
+	# steam-installer depends on steam-libs-i386 -- needs multiarch enabled
+	eager <<<"dpkg --print-foreign-architectures | grep -q i386 || dpkg --add-architecture i386"
 	key steam https://repo.steampowered.com/steam/archive/stable/steam.gpg
 	src steam https://repo.steampowered.com/steam/ stable steam
-	apt steam-installer
-	defer <<<"steam"
+	apt steam-launcher
 }
 
 synaptic() {
@@ -653,6 +592,7 @@ virtualbox() {
 
 	eager <<<"ln -sf /usr/src/linux-headers-\$(uname -r)/arch/x86 /usr/src/linux-headers-\$(uname -r)/arch/amd64"
 	apt virtualbox
+	apt virtualbox-modules
 	apt virtualbox-dkms
 	apt virtualbox-guest-additions-iso
 	apt virtualbox-qt
@@ -687,55 +627,11 @@ whatsapp() {
 	SH
 }
 
-kitty() {
-	guard-desktop
-	guard kitty
+wrangler() {
+	guard wrangler
 
-	ext https://sw.kovidgoyal.net/kitty/installer.sh sh /dev/stdin launch=n
-}
-
-keybindings() {
-	guard-desktop
-	guard --file /tmp/.steward-keybindings
-
-	defer <<-SH
-		GS="sudo -u $USER DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/\$(id -u $USER)/bus gsettings"
-
-		# Switch to workspace (Super+N)
-		for i in \$(seq 1 9); do
-			\$GS set org.gnome.desktop.wm.keybindings switch-to-workspace-\$i "['<Super>\$i']"
-		done
-
-		# Move window to workspace (Super+Shift+N)
-		declare -A symbols=([1]=exclam [2]=at [3]=numbersign [4]=dollar [5]=percent [6]=asciicircum [7]=ampersand [8]=asterisk [9]=parenleft)
-		for i in \$(seq 1 9); do
-			\$GS set org.gnome.desktop.wm.keybindings move-to-workspace-\$i "['<Shift><Super>\${symbols[\$i]}']"
-		done
-
-		touch /tmp/.steward-keybindings
-	SH
-}
-
-keyd() {
-	guard-desktop
-	guard keyd
-
-	tar --keep keyd keyd https://github.com/rvaiya/keyd/archive/refs/tags/v2.6.0.tar.gz
-	defer <<-SH
-		make -C /opt/keyd
-		make -C /opt/keyd install
-		cat <<-'EOF' > /etc/keyd/default.conf
-			[ids]
-			*
-
-			[settings]
-			chord_timeout = 5
-
-			[main]
-			leftmeta+leftshift+f23 = rightcontrol
-		EOF
-		systemctl enable --now keyd
-	SH
+	npm wrangler # Cloudflare CLI (Workers, Pages, R2, D1, KV) @see https://developers.cloudflare.com/workers/wrangler/
 }
 
 # vim: noet
+
