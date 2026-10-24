@@ -10,6 +10,7 @@
 # @desc Idempotent: input that already holds feature-view Markdown output renders the same as its source.
 # @desc SCENARIO labels Scenarios (legacy: Acceptance criteria); SPEC labels Specifications (legacy: Specs,
 # @desc Constraints); an older EARS label becomes SPEC. A chapter subtitle (_Acceptance criteria._) passes through.
+# @desc A provenance comment (<!-- source: ... -->) passes through in Markdown and shows dim with --ansi.
 # @flag [-h|--help] -- Print the usage and exit.
 # @flag [--ansi] -- Terminal output: bold keywords, dim labels, a dim rule line, titles in one accent colour.
 # @arg [...] -- feature files or directories; a directory expands to its *.feature.md, index.feature.md first.
@@ -48,6 +49,7 @@ function feature-view::help() {
 	Input that is already feature-view Markdown output renders unchanged.
 	SCENARIO labels Scenarios (legacy: Acceptance criteria); SPEC labels Specifications (legacy: Specs,
 	Constraints); an older EARS label becomes SPEC. A chapter subtitle (_Acceptance criteria._) passes through.
+	A provenance comment (<!-- source: ... -->) passes through in Markdown and shows dim with --ansi.
 
 	  --ansi      Terminal output: bold keywords, dim labels and rules, accent-coloured titles.
 	  -h, --help  Print this help.
@@ -191,6 +193,13 @@ function feature-view::program() {
 		if (chapter == "specifications" || chapter == "specs" || chapter == "constraints") label = "SPEC";
 		element(label, ansi ? title : $0);
 		next;
+	}
+
+	# A provenance comment (feature-md-27) stays hidden Markdown; in ANSI it shows dim, never takes a label or bold.
+	/^<!--[[:space:]]*source:.*-->[[:space:]]*$/ {
+		if (ansi) { s = $0; sub(/^<!--[[:space:]]*/, "", s); sub(/[[:space:]]*-->[[:space:]]*$/, "", s); emit(D s R); }
+		else emit($0);
+		body = 1; next;
 	}
 
 	/^[[:space:]]*$/ { if (!(ansi && in_elem)) blank(); next; }
