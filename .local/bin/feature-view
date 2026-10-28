@@ -11,6 +11,7 @@
 # @desc SCENARIO labels Scenarios (legacy: Acceptance criteria); SPEC labels Specifications (legacy: Specs,
 # @desc Constraints); an older EARS label becomes SPEC. A chapter subtitle (_Acceptance criteria._) passes through.
 # @desc A provenance comment (<!-- source: ... -->) passes through in Markdown and shows dim with --ansi.
+# @desc Keyword lines may end in a backslash hard break or be blank-line separated (legacy); --ansi strips the backslash.
 # @flag [-h|--help] -- Print the usage and exit.
 # @flag [--ansi] -- Terminal output: bold keywords, dim labels, a dim rule line, titles in one accent colour.
 # @arg [...] -- feature files or directories; a directory expands to its *.feature.md, index.feature.md first.
@@ -209,6 +210,7 @@ function feature-view::program() {
 		if (pending != "") line = unlabel(line, pending);
 		if (keywords) line = bold_keyword(line);
 		if (ansi) {
+			sub(/[[:space:]]*\\[[:space:]]*$/, "", line);
 			if (in_elem && line ~ /^\*\*(And|But)\*\*/) line = "  " line;
 			line = ansi_inline(line);
 		}
